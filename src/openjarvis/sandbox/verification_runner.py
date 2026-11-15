@@ -200,8 +200,15 @@ class IsolatedVerificationRunner:
         tokens: List[str],
         allowed_dirs: List[Path],
     ) -> Optional[str]:
-        """Validate that neither the working directory nor any path in arguments escapes authorized roots via symlinks, traversal, UNC paths, or encoded sequences."""
-        # 1. Check if cwd is a symlink resolving outside allowed dirs
+        """Validate that neither the working directory nor any path in arguments escapes authorized roots via symlinks, traversal, UNC paths, drive roots, or encoded sequences."""
+        import urllib.parse
+        import re
+
+        # 1. Check if cwd is a UNC path or symlink resolving outside allowed dirs
+        cwd_str = str(resolved_cwd)
+        if cwd_str.startswith(("\\\\", "//")):
+            return f"Security boundary violation: UNC paths prohibited in working directory '{cwd_str}'"
+
         try:
             real_cwd = resolved_cwd.resolve()
             if not is_path_within_allowed(real_cwd, allowed_dirs):
@@ -209,59 +216,83 @@ class IsolatedVerificationRunner:
         except Exception as exc:
             return f"Security boundary violation: cannot resolve working directory: {exc}"
 
-        # 2. Check each token for path traversal, UNC paths, and symlink escapes
-        import urllib.parse
+        # 2. Check each token for path traversal, UNC paths, drive-root escapes, and symlink escapes
         for tok in tokens[1:]:
             clean_tok = tok.strip()
 
-            # URL-decode token if encoded
-            try:
-                decoded_tok = urllib.parse.unquote(clean_tok)
-            except Exception:
-                decoded_tok = clean_tok
+            candidates_to_check = [clean_tok]
+            if "=" in clean_tok:
+                candidates_to_check.append(clean_tok.split("=", 1)[1].strip())
 
-            # UNC path check (reject network share execution e.g. \\host\share or //host/share)
-            if (
-                clean_tok.startswith("\\\\")
-                or decoded_tok.startswith("\\\\")
-                or clean_tok.startswith("//")
-                or decoded_tok.startswith("//")
-            ):
-                return f"Security boundary violation: UNC paths prohibited in argument '{tok}'"
+            for part in candidates_to_check:
+                # Multi-pass URL-decode token if encoded
+                decoded_part = part
+                for _ in range(3):
+                    next_decoded = urllib.parse.unquote(decoded_part)
+                    if next_decoded == decoded_part:
+                        break
+                    decoded_part = next_decoded
 
-            # Traversal patterns (raw, lower, and URL-decoded)
-            lower_clean = clean_tok.lower()
-            lower_decoded = decoded_tok.lower()
-            if (
-                clean_tok == ".."
-                or clean_tok.startswith("..")
-                or "/.." in clean_tok
-                or "\\.." in clean_tok
-                or "%2e%2e" in lower_clean
-                or ".." in decoded_tok
-                or "/etc/" in clean_tok
-                or "\\windows\\" in lower_clean
-                or "\\system32\\" in lower_clean
-            ):
-                return f"Security boundary violation: path traversal prohibited in argument '{tok}'"
+                lower_clean = part.lower()
+                lower_decoded = decoded_part.lower()
 
-            # Check if token resolves to a filesystem path
-            is_path_like = (
-                any(clean_tok.startswith(p) for p in ("/", "\\", "c:", "C:", "d:", "D:"))
-                or (clean_tok.startswith((".", "./", ".\\")) and ("/" in clean_tok or "\\" in clean_tok))
-                or "/" in clean_tok
-                or "\\" in clean_tok
-            )
-            if is_path_like:
-                try:
-                    candidate = Path(decoded_tok)
-                    if not candidate.is_absolute():
-                        candidate = (resolved_cwd / candidate)
-                    real_candidate = candidate.resolve()
-                    if not is_path_within_allowed(real_candidate, allowed_dirs):
-                        return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
-                except Exception:
-                    pass
+                # UNC path check (reject network share execution e.g. \\host\share or //host/share)
+                if (
+                    part.startswith(("\\\\", "//"))
+                    or decoded_part.startswith(("\\\\", "//"))
+                    or part.startswith(r"\??\\")
+                ):
+                    return f"Security boundary violation: UNC paths prohibited in argument '{tok}'"
+
+                # Traversal patterns (raw, lower, and URL-decoded)
+                if (
+                    part == ".."
+                    or part.startswith("..")
+                    or "/.." in part
+                    or "\\.." in part
+                    or "%2e%2e" in lower_clean
+                    or "%2e%2e" in lower_decoded
+                    or ".." in decoded_part
+                    or "/etc/" in part
+                    or lower_clean.startswith("/etc")
+                    or "\\windows\\" in lower_clean
+                    or lower_clean.startswith("c:\\windows")
+                    or "\\system32\\" in lower_clean
+                ):
+                    return f"Security boundary violation: path traversal prohibited in argument '{tok}'"
+
+                # Windows drive-root escape check (e.g. C:\, D:\, C:, D:, /, \)
+                if (
+                    re.match(r"^[a-zA-Z]:[/\\]?$", part)
+                    or re.match(r"^[a-zA-Z]:[/\\]?$", decoded_part)
+                    or part in ("/", "\\")
+                    or decoded_part in ("/", "\\")
+                ):
+                    try:
+                        cand_root = Path(decoded_part if re.match(r"^[a-zA-Z]:[/\\]", decoded_part) else f"{decoded_part}\\").resolve()
+                        if not is_path_within_allowed(cand_root, allowed_dirs):
+                            return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
+                    except Exception:
+                        return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
+
+                # Check if token resolves to a filesystem path (existing or nonexistent)
+                is_path_like = (
+                    any(part.startswith(p) for p in ("/", "\\"))
+                    or re.match(r"^[a-zA-Z]:", part) is not None
+                    or (part.startswith((".", "./", ".\\")) and ("/" in part or "\\" in part))
+                    or "/" in part
+                    or "\\" in part
+                )
+                if is_path_like:
+                    try:
+                        candidate = Path(decoded_part)
+                        if not candidate.is_absolute():
+                            candidate = (resolved_cwd / candidate)
+                        real_candidate = candidate.resolve()
+                        if not is_path_within_allowed(real_candidate, allowed_dirs):
+                            return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
+                    except Exception as res_err:
+                        return f"Security boundary violation: argument '{tok}' cannot be safely resolved: {res_err}"
 
         return None
 
@@ -356,55 +387,31 @@ class IsolatedVerificationRunner:
                 "sandbox_mode": "blocked",
             }
 
-        # 4. Check for untrusted inline execution (python -c, python -m, node -e)
-        is_inline, inline_reason = self.is_untrusted_inline_execution(tokens)
-        container_available = self.is_container_runtime_available()
+        # 4. WORKSPACE AUTHORIZATION & SYMLINK/TRAVERSAL ESCAPE VALIDATION
+        # MUST BE EVALUATED BEFORE ANY EXECUTION BRANCH (inline execution, container execution, host execution, metadata)
+        raw_cwd_str = str(cwd).strip()
+        lower_cwd = raw_cwd_str.lower()
+        if raw_cwd_str.startswith(("\\\\", "//")):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: UNC paths prohibited in working directory '{cwd}'",
+                "sandbox_mode": "blocked",
+            }
+        if "%2e%2e" in lower_cwd or "%2e" in lower_cwd:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: URL-encoded traversal prohibited in working directory '{cwd}'",
+                "sandbox_mode": "blocked",
+            }
 
-        if is_inline:
-            if not container_available:
-                # FAIL CLOSED: Bare host cannot safely isolate arbitrary inline execution
-                logger.warning("Blocked untrusted inline execution without container sandbox: %s (%s)", cmd, inline_reason)
-                return {
-                    "command": cmd,
-                    "passed": False,
-                    "status": VerificationOutcome.BLOCKED.value,
-                    "exit_code": -1,
-                    "duration_seconds": 0.0,
-                    "output": (
-                        f"Security policy violation: {inline_reason} Execution is blocked because an isolated container "
-                        f"sandbox (Docker/Podman) is unavailable. Executable allowlists do not provide process isolation."
-                    ),
-                    "sandbox_mode": "blocked_no_container",
-                }
-            # If container sandbox is available, run inside container
-            try:
-                return self._run_in_container(tokens, resolved_cwd, timeout_sec, t0)
-            except Exception as container_err:
-                return {
-                    "command": cmd,
-                    "passed": False,
-                    "status": VerificationOutcome.BLOCKED.value,
-                    "exit_code": -1,
-                    "duration_seconds": round(time.time() - t0, 2),
-                    "output": f"Container sandbox failed for untrusted inline execution: {container_err}",
-                    "sandbox_mode": "container_failure",
-                }
-
-        # 5. Strictly reject dangerous shell chaining characters
-        for token in tokens:
-            for op in (";", "&", "|", ">", "<", "$", "`", "\n", "\r"):
-                if op in token:
-                    return {
-                        "command": cmd,
-                        "passed": False,
-                        "status": VerificationOutcome.BLOCKED.value,
-                        "exit_code": -1,
-                        "duration_seconds": 0.0,
-                        "output": f"Security boundary violation: dangerous shell character '{op}' detected in argument '{token}'",
-                        "sandbox_mode": "blocked",
-                    }
-
-        # 6. Validate workspace directory and check symlink / path traversal escapes
         cfg = load_config()
         configured_allowed = getattr(cfg.security, "allowed_dirs", None)
         if configured_allowed:
@@ -436,6 +443,54 @@ class IsolatedVerificationRunner:
                 "output": escape_err,
                 "sandbox_mode": "blocked",
             }
+
+        # 5. Check for untrusted inline execution (python -c, python -m, node -e)
+        is_inline, inline_reason = self.is_untrusted_inline_execution(tokens)
+        container_available = self.is_container_runtime_available()
+
+        if is_inline:
+            if not container_available:
+                # FAIL CLOSED: Bare host cannot safely isolate arbitrary inline execution
+                logger.warning("Blocked untrusted inline execution without container sandbox: %s (%s)", cmd, inline_reason)
+                return {
+                    "command": cmd,
+                    "passed": False,
+                    "status": VerificationOutcome.BLOCKED.value,
+                    "exit_code": -1,
+                    "duration_seconds": 0.0,
+                    "output": (
+                        f"Security policy violation: {inline_reason} Execution is blocked because an isolated container "
+                        f"sandbox (Docker/Podman) is unavailable. Executable allowlists do not provide process isolation."
+                    ),
+                    "sandbox_mode": "blocked_no_container",
+                }
+            # If container sandbox is available, run inside container (workspace was already validated above)
+            try:
+                return self._run_in_container(tokens, resolved_cwd, timeout_sec, t0)
+            except Exception as container_err:
+                return {
+                    "command": cmd,
+                    "passed": False,
+                    "status": VerificationOutcome.BLOCKED.value,
+                    "exit_code": -1,
+                    "duration_seconds": round(time.time() - t0, 2),
+                    "output": f"Container sandbox failed for untrusted inline execution: {container_err}",
+                    "sandbox_mode": "container_failure",
+                }
+
+        # 6. Strictly reject dangerous shell chaining characters in regular commands
+        for token in tokens:
+            for op in (";", "&", "|", ">", "<", "$", "`", "\n", "\r"):
+                if op in token:
+                    return {
+                        "command": cmd,
+                        "passed": False,
+                        "status": VerificationOutcome.BLOCKED.value,
+                        "exit_code": -1,
+                        "duration_seconds": 0.0,
+                        "output": f"Security boundary violation: dangerous shell character '{op}' detected in argument '{token}'",
+                        "sandbox_mode": "blocked",
+                    }
 
         # 7. Execute within container sandbox if container runtime is available
         if container_available:

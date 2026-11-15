@@ -69,7 +69,6 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
   const rawContent = lastAssistant?.content ?? '';
   const displayReply = stripThinkTags(rawContent);
   const speakableReply = toSpeakableText(rawContent);
-  const showReply = heard !== '' && displayReply.length > 0;
 
   // spoken-text bookkeeping (refs: updated outside render)
   const spokenIdxRef = useRef(0);
@@ -83,7 +82,16 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
   const lastIdRef = useRef<string | undefined>(undefined);
   const baseIdRef = useRef<string | undefined>(undefined);
   lastIdRef.current = lastAssistant?.id;
-  const isNewReply = () => lastIdRef.current !== baseIdRef.current;
+  const isNewReply = () => Boolean(lastIdRef.current && lastIdRef.current !== baseIdRef.current);
+  const showReply = (heard !== '' || isNewReply()) && displayReply.length > 0;
+
+  // Automatically prepare for speaking when a new assistant message arrives in VoiceMode
+  useEffect(() => {
+    if (lastAssistant?.id && lastAssistant.id !== baseIdRef.current) {
+      awaitingReplyRef.current = true;
+      spokenIdxRef.current = 0;
+    }
+  }, [lastAssistant?.id]);
 
   const speakChunk = useCallback((text: string) => {
     const cleaned = stripEmojis(text).trim();
@@ -106,6 +114,7 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
     window.speechSynthesis?.cancel();
     pendingRef.current = 0;
     spokenIdxRef.current = replyRef.current.length;
+    baseIdRef.current = lastIdRef.current;
     awaitingReplyRef.current = false;
     window.dispatchEvent(new CustomEvent('jarvis:voice-interrupt'));
   }, []);

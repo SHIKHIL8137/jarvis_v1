@@ -1,5 +1,37 @@
 # Jarvis V1 Integration & Upgrade Changelog
 
+## Version 8: Final Defect Repair, Workspace Authorization & Independent Verification Pass
+**Date:** 2026-11-15  
+**Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  
+
+### Key Highlights:
+1. **FORGE Workspace Authorization Before Execution (`src/openjarvis/sandbox/verification_runner.py`)**:
+   - Reordered execution flow so workspace authorization and containment checks execute BEFORE all execution branches (inline execution, container execution, host execution, and metadata commands).
+   - Prevents unauthorized working directories from being mounted into container sandboxes (`-v {cwd}:/workspace:rw`).
+   - Hardened `check_symlink_and_traversal_escapes` to reject UNC paths (`\\` and `//`), URL-encoded traversal (`%2e%2e`), Windows drive root escapes (`C:\`, `D:\`), relative traversal, symlink escapes outside workspace, and nonexistent paths that resolve outside workspace.
+   - Added 8 dedicated regression tests in `test_forge_sandboxing_p0.py` verifying all containment vectors.
+
+2. **n8n Exact Execution Reconciliation (`src/openjarvis/tools/n8n.py`)**:
+   - Removed timestamp-only matching fallback (`elif time_matches and matching_execution is None`) which falsely associated unrelated workflow executions.
+   - Exact correlation strictly requires matching workflow ID, exact approval ID or idempotency key in metadata, and valid dispatch window.
+   - Fail-closed ambiguous handling: when API responses lack correlation metadata or executions are ambiguous, returns `status="outcome_unknown"` without guessing.
+   - Pagination traversal implemented via cursor pagination across pages up to safety limit; empty first page is not treated as non-execution if subsequent pages exist.
+   - Prevented duplicate retries while status is ambiguous. Added 12 regression tests in `test_n8n_ambiguous_outcomes_p0.py`.
+
+3. **Model Discovery HTTP 401 Classification & Provider Expansion (`src/openjarvis/models/discovery.py`)**:
+   - HTTP 401 and 403 errors are preserved as `status="auth_error"`, `connected=False`, and `model_count=0` across all providers, never overwritten with generic `degraded` or `healthy`.
+   - Clear status taxonomy: `unconfigured`, `healthy`, `auth_error`, `rate_limited`, `unreachable`, `unsupported_endpoint`, `degraded`.
+   - Added direct discovery support and health probes for `atlascloud` (`ATLASCLOUD_API_KEY`) and `minimax` (`MINIMAX_API_KEY`).
+   - Added tests in `test_model_discovery.py` covering 401, 403, 429, 404, unreachable, empty catalog, and unconfigured.
+
+4. **Voice Mode Actual TTS Component Testing (`frontend/src/components/Chat/VoiceMode.test.tsx`)**:
+   - Component tests mounted in Vitest with happy-dom verifying actual `window.speechSynthesis.speak()` invocations.
+   - Verified that `SpeechSynthesisUtterance.text` contains zero emojis across all 11 conditions (simple emoji, punctuation + emoji, country flag, developer ZWJ, family ZWJ, skin tone modifier, keycap, emoji-only, progressive streaming, barge-in stop, and multi-sentence).
+   - Verified visible DOM retains original emojis intact.
+   - All 15 tests in `VoiceMode.test.tsx` and all 148 tests across 24 frontend test files passed. Production build succeeded.
+
+---
+
 ## Version: Voice Mode Emoji Normalization, Container Isolation Hardening & Exact Reconciliation Pass
 **Date:** 2026-11-15  
 **Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  

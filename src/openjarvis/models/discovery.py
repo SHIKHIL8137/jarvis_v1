@@ -323,6 +323,8 @@ class ModelDiscoveryEngine:
                 ("google", engine._google_client),
                 ("deepseek", engine._deepseek_client),
                 ("openrouter", engine._openrouter_client),
+                ("atlascloud", getattr(engine, "_atlascloud_client", None)),
+                ("minimax", getattr(engine, "_minimax_client", None)),
             ]
 
             for prov, client in providers_to_probe:
@@ -333,6 +335,8 @@ class ModelDiscoveryEngine:
                     "google": "GEMINI_API_KEY",
                     "deepseek": "DEEPSEEK_API_KEY",
                     "openrouter": "OPENROUTER_API_KEY",
+                    "atlascloud": "ATLASCLOUD_API_KEY",
+                    "minimax": "MINIMAX_API_KEY",
                 }
                 env_key = os.environ.get(env_key_map.get(prov, ""))
 
@@ -430,7 +434,16 @@ class ModelDiscoveryEngine:
                     err_str = str(exc).lower()
                     code = getattr(exc, "status_code", getattr(exc, "code", getattr(exc, "http_status", None)))
                     connected = False
-                    if code in (401, 403) or "auth" in err_str or "401" in err_str or "403" in err_str or "unauthorized" in err_str or "invalid api key" in err_str or "forbidden" in err_str:
+                    if (
+                        code in (401, 403)
+                        or "auth" in err_str
+                        or "401" in err_str
+                        or "403" in err_str
+                        or "unauthorized" in err_str
+                        or "invalid api key" in err_str
+                        or "forbidden" in err_str
+                        or "permission denied" in err_str
+                    ):
                         status = "auth_error"
                         connected = False
                     elif code == 429 or "429" in err_str or "rate limit" in err_str or "quota" in err_str:
@@ -439,7 +452,7 @@ class ModelDiscoveryEngine:
                     elif code in (404, 405) or "404" in err_str or "405" in err_str or "not found" in err_str or "unsupported" in err_str:
                         status = "unsupported_endpoint"
                         connected = True
-                    elif "timeout" in err_str or "connection" in err_str or "unreachable" in err_str:
+                    elif "timeout" in err_str or "connection" in err_str or "unreachable" in err_str or "refused" in err_str:
                         status = "unreachable"
                         connected = False
                     else:

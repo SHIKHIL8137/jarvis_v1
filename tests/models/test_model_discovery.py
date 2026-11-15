@@ -186,7 +186,7 @@ def test_discovery_empty_model_list():
 
 
 def test_discovery_rate_limited():
-    """Provider returning HTTP 429 Too Many Requests must not raise uncaught error."""
+    """Provider returning HTTP 429 Too Many Requests must record status='rate_limited' and connected=True."""
     engine = ModelDiscoveryEngine()
 
     http_429 = urllib.error.HTTPError(
@@ -202,6 +202,77 @@ def test_discovery_rate_limited():
             with patch.object(engine, "_probe_local_engines", return_value=[]):
                 models = engine.discover_all(force=True)
                 assert isinstance(models, list)
+                providers = engine.list_providers()
+                ant_prov = next((p for p in providers if p.get("provider") == "anthropic"), None)
+                assert ant_prov is not None
+                assert ant_prov.get("status") == "rate_limited"
+                assert ant_prov.get("connected") is True
+                assert ant_prov.get("model_count") == 0
+
+
+def test_discovery_forbidden_api_key_403():
+    """Provider returning HTTP 403 Forbidden must record status='auth_error' and connected=False."""
+    engine = ModelDiscoveryEngine()
+
+    http_403 = urllib.error.HTTPError(
+        url="https://api.anthropic.com/v1/models",
+        code=403,
+        msg="Forbidden",
+        hdrs=MagicMock(),
+        fp=MagicMock(read=lambda: b'{"error": {"type": "forbidden", "message": "Access denied"}}'),
+    )
+
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-forbidden"}):
+        with patch("urllib.request.urlopen", side_effect=http_403):
+            with patch.object(engine, "_probe_local_engines", return_value=[]):
+                models = engine.discover_all(force=True)
+                assert isinstance(models, list)
+                providers = engine.list_providers()
+                ant_prov = next((p for p in providers if p.get("provider") == "anthropic"), None)
+                assert ant_prov is not None
+                assert ant_prov.get("status") == "auth_error"
+                assert ant_prov.get("connected") is False
+                assert ant_prov.get("model_count") == 0
+
+
+def test_discovery_endpoint_not_found_404():
+    """Provider endpoint returning HTTP 404 must record status='unsupported_endpoint' and connected=True."""
+    engine = ModelDiscoveryEngine()
+
+    http_404 = urllib.error.HTTPError(
+        url="https://api.anthropic.com/v1/models",
+        code=404,
+        msg="Not Found",
+        hdrs=MagicMock(),
+        fp=MagicMock(read=lambda: b'{"error": "Endpoint not found"}'),
+    )
+
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-test"}):
+        with patch("urllib.request.urlopen", side_effect=http_404):
+            with patch.object(engine, "_probe_local_engines", return_value=[]):
+                models = engine.discover_all(force=True)
+                assert isinstance(models, list)
+                providers = engine.list_providers()
+                ant_prov = next((p for p in providers if p.get("provider") == "anthropic"), None)
+                assert ant_prov is not None
+                assert ant_prov.get("status") == "unsupported_endpoint"
+                assert ant_prov.get("connected") is True
+
+
+def test_discovery_connection_failure_unreachable():
+    """Provider timing out or failing network connection must record status='unreachable'."""
+    engine = ModelDiscoveryEngine()
+
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-test"}):
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("Connection timed out")):
+            with patch.object(engine, "_probe_local_engines", return_value=[]):
+                models = engine.discover_all(force=True)
+                assert isinstance(models, list)
+                providers = engine.list_providers()
+                ant_prov = next((p for p in providers if p.get("provider") == "anthropic"), None)
+                assert ant_prov is not None
+                assert ant_prov.get("status") == "unreachable"
+                assert ant_prov.get("connected") is False
 
 
 def test_discovery_zero_credentials_unconfigured():

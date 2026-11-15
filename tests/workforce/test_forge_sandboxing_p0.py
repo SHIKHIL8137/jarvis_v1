@@ -222,3 +222,108 @@ def test_container_sandbox_isolation_flags(tmp_path):
                 assert "--cpus" in args
                 assert "--pids-limit" in args
                 assert f"{tmp_path.resolve()}:/workspace:rw" in args
+
+
+def test_inline_python_with_unauthorized_cwd_blocked(tmp_path):
+    """Inline Python execution with unauthorized cwd must be blocked even when container runtime is available."""
+    runner = IsolatedVerificationRunner()
+    authorized = tmp_path / "authorized"
+    authorized.mkdir()
+    unauthorized = tmp_path / "unauthorized"
+    unauthorized.mkdir()
+
+    with patch.object(runner, "is_container_runtime_available", return_value=True):
+        with patch("openjarvis.sandbox.verification_runner.load_config") as mock_cfg:
+            mock_cfg.return_value.security.allowed_dirs = [str(authorized)]
+            with patch.object(runner, "_run_in_container") as mock_run_container:
+                res = runner.execute_verification_command('python -c "print(1)"', cwd=str(unauthorized))
+                assert res["passed"] is False
+                assert res["status"] == VerificationOutcome.BLOCKED.value
+                assert "outside authorized workspace" in res["output"]
+                mock_run_container.assert_not_called()
+
+
+def test_inline_node_with_unauthorized_cwd_blocked(tmp_path):
+    """Inline Node execution with unauthorized cwd must be blocked even when container runtime is available."""
+    runner = IsolatedVerificationRunner()
+    authorized = tmp_path / "authorized"
+    authorized.mkdir()
+    unauthorized = tmp_path / "unauthorized"
+    unauthorized.mkdir()
+
+    with patch.object(runner, "is_container_runtime_available", return_value=True):
+        with patch("openjarvis.sandbox.verification_runner.load_config") as mock_cfg:
+            mock_cfg.return_value.security.allowed_dirs = [str(authorized)]
+            with patch.object(runner, "_run_in_container") as mock_run_container:
+                res = runner.execute_verification_command('node -e "console.log(1)"', cwd=str(unauthorized))
+                assert res["passed"] is False
+                assert res["status"] == VerificationOutcome.BLOCKED.value
+                assert "outside authorized workspace" in res["output"]
+                mock_run_container.assert_not_called()
+
+
+def test_symlink_escape_with_container_available_blocked(tmp_path):
+    """Symlink escape in arguments must be blocked before container invocation even if Docker is running."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    with patch.object(runner, "is_container_runtime_available", return_value=True):
+        with patch.object(runner, "check_symlink_and_traversal_escapes", return_value="Security boundary violation: symlink escape detected"):
+            with patch.object(runner, "_run_in_container") as mock_run_container:
+                res = runner.execute_verification_command("pytest test_link.py", cwd=str(ws))
+                assert res["passed"] is False
+                assert res["status"] == VerificationOutcome.BLOCKED.value
+                assert "symlink escape detected" in res["output"]
+                mock_run_container.assert_not_called()
+
+
+def test_windows_drive_root_escape_blocked(tmp_path):
+    """Windows drive-root escape (e.g. C:\\ or D:\\) in command arguments must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    with patch("openjarvis.sandbox.verification_runner.load_config") as mock_cfg:
+        mock_cfg.return_value.security.allowed_dirs = [str(ws)]
+        res_c = runner.execute_verification_command("pytest C:\\", cwd=str(ws))
+        assert res_c["passed"] is False
+        assert res_c["status"] == VerificationOutcome.BLOCKED.value
+        assert "drive-root escape prohibited" in res_c["output"] or "resolves outside authorized workspace" in res_c["output"]
+
+        res_d = runner.execute_verification_command("pytest D:/", cwd=str(ws))
+        assert res_d["passed"] is False
+        assert res_d["status"] == VerificationOutcome.BLOCKED.value
+
+
+def test_unc_path_in_cwd_or_args_blocked(tmp_path):
+    """UNC path in cwd or argument must be rejected immediately."""
+    runner = IsolatedVerificationRunner()
+
+    # 1. UNC cwd
+    res_cwd = runner.execute_verification_command("pytest tests/", cwd=r"\\server\share\repo")
+    assert res_cwd["passed"] is False
+    assert res_cwd["status"] == VerificationOutcome.BLOCKED.value
+    assert "UNC paths prohibited" in res_cwd["output"]
+
+    # 2. UNC argument
+    res_arg = runner.execute_verification_command(r"pytest \\server\share\evil.py", cwd=str(tmp_path))
+    assert res_arg["passed"] is False
+    assert res_arg["status"] == VerificationOutcome.BLOCKED.value
+    assert "UNC paths prohibited" in res_arg["output"]
+
+
+def test_nonexistent_path_resolving_outside_workspace_blocked(tmp_path):
+    """Nonexistent filesystem paths that resolve outside workspace must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    with patch("openjarvis.sandbox.verification_runner.load_config") as mock_cfg:
+        mock_cfg.return_value.security.allowed_dirs = [str(ws)]
+        # Nonexistent path on C:
+        res_nonexistent = runner.execute_verification_command("pytest C:\\nonexistent_system_secret\\test.py", cwd=str(ws))
+        assert res_nonexistent["passed"] is False
+        assert res_nonexistent["status"] == VerificationOutcome.BLOCKED.value
+        assert "resolves outside authorized workspace" in res_nonexistent["output"]
+

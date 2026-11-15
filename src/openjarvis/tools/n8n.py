@@ -476,82 +476,156 @@ class N8nClient:
         started_after: Optional[float] = None,
         approval_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        max_pages: int = 5,
     ) -> Dict[str, Any]:
         """Query n8n execution list to determine if a workflow executed or is currently executing.
 
         Correlates against workflow_id, started_after timestamp, approval_id, and idempotency_key.
+        Requires exact correlation metadata. Timestamp alone NEVER proves an execution belongs to an approval.
         """
+        if not approval_id and not idempotency_key:
+            return {
+                "reconciled": False,
+                "found": False,
+                "status": "outcome_unknown",
+                "error": "Insufficient correlation metadata: approval_id or idempotency_key required",
+            }
+
         clean_id = _sanitize_path(workflow_id).lstrip("/")
-        endpoint = f"/rest/executions?workflowId={clean_id}" if not self.api_key else f"/api/v1/executions?workflowId={clean_id}"
-        try:
-            res = self._make_request(endpoint)
-        except Exception:
-            alt_endpoint = f"/api/v1/executions?workflowId={clean_id}" if "rest" in endpoint else f"/rest/executions?workflowId={clean_id}"
+        all_items: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+
+        for _ in range(max_pages):
+            cursor_param = f"&cursor={urllib.parse.quote(str(cursor))}" if cursor else ""
+            endpoint = (
+                f"/rest/executions?workflowId={clean_id}{cursor_param}"
+                if not self.api_key
+                else f"/api/v1/executions?workflowId={clean_id}{cursor_param}"
+            )
             try:
-                res = self._make_request(alt_endpoint)
+                res = self._make_request(endpoint)
             except Exception as exc:
-                return {"reconciled": False, "found": False, "error": str(exc)}
+                alt_endpoint = (
+                    f"/api/v1/executions?workflowId={clean_id}{cursor_param}"
+                    if "rest" in endpoint
+                    else f"/rest/executions?workflowId={clean_id}{cursor_param}"
+                )
+                try:
+                    res = self._make_request(alt_endpoint)
+                except Exception as alt_exc:
+                    return {
+                        "reconciled": False,
+                        "found": False,
+                        "status": "outcome_unknown",
+                        "error": f"Execution API unavailable: {exc}; {alt_exc}",
+                    }
 
-        data = res.get("data", [])
-        if not data and isinstance(res, list):
-            data = res
+            if not isinstance(res, (dict, list)):
+                return {
+                    "reconciled": False,
+                    "found": False,
+                    "status": "outcome_unknown",
+                    "error": "Incomplete or malformed API response from n8n executions endpoint",
+                }
 
-        if not data:
+            if isinstance(res, list):
+                page_items = res
+                next_cursor = None
+            else:
+                page_items = res.get("data")
+                if not isinstance(page_items, list):
+                    if "id" in res:
+                        page_items = [res]
+                    else:
+                        page_items = []
+                next_cursor = res.get("nextCursor") or res.get("next_cursor")
+
+            all_items.extend(page_items)
+
+            if not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+
+        if not all_items:
             return {"reconciled": True, "found": False, "status": "not_executed"}
 
-        matching_execution = None
-        for item in data:
+        exact_matches = []
+        ambiguous_newer = []
+        other_approval_matches = []
+
+        for item in all_items:
             if not isinstance(item, dict):
                 continue
             item_id = str(item.get("id", ""))
 
-            # Check idempotency / approval key in metadata or customData if present
-            custom_data = item.get("customData") or item.get("metadata") or {}
+            # Verify workflowId if present in item
+            exec_wf_id = str(item.get("workflowId") or item.get("workflowData", {}).get("id") or "")
+            if exec_wf_id and exec_wf_id != clean_id:
+                continue
+
+            custom_data = item.get("customData") or item.get("metadata") or item.get("additionalData") or {}
             custom_str = json.dumps(custom_data) if isinstance(custom_data, (dict, list)) else str(custom_data)
 
-            has_key_match = False
+            has_our_key = False
             if idempotency_key and (idempotency_key in custom_str or item_id == idempotency_key):
-                has_key_match = True
+                has_our_key = True
             if approval_id and (approval_id in custom_str or item_id == approval_id):
-                has_key_match = True
+                has_our_key = True
 
-            # Check started_after timestamp
             exec_time = _parse_timestamp(item.get("startedAt") or item.get("createdAt"))
             time_matches = True
             if started_after is not None and exec_time is not None:
-                # Execution started before our action (allow 2.0s clock skew)
                 if exec_time < (started_after - 2.0):
                     time_matches = False
 
-            if has_key_match:
-                matching_execution = item
-                break
-            elif time_matches and matching_execution is None:
-                matching_execution = item
+            if has_our_key and time_matches:
+                exact_matches.append(item)
+            elif time_matches:
+                # Started in our timeframe, but did not match our key
+                # Distinguish if it explicitly has another approval/idempotency key vs missing metadata
+                if (
+                    "approval_id" in custom_str
+                    or "idempotency_key" in custom_str
+                    or "_idempotency_key" in custom_str
+                ):
+                    other_approval_matches.append(item)
+                else:
+                    ambiguous_newer.append(item)
 
-        if not matching_execution:
-            return {"reconciled": True, "found": False, "status": "not_executed"}
+        if exact_matches:
+            matching_execution = exact_matches[0]
+            exec_id = str(matching_execution.get("id", ""))
+            raw_status = str(matching_execution.get("status", "unknown")).lower()
+            finished = bool(matching_execution.get("finished", False))
 
-        exec_id = str(matching_execution.get("id", ""))
-        raw_status = str(matching_execution.get("status", "unknown")).lower()
-        finished = bool(matching_execution.get("finished", False))
+            if raw_status in ("success", "finished") or (finished and raw_status not in ("error", "failed", "crashed")):
+                norm_status = "success"
+            elif raw_status in ("running", "waiting", "executing") or (not finished and raw_status not in ("error", "failed", "crashed")):
+                norm_status = "running"
+            elif raw_status in ("error", "failed", "crashed"):
+                norm_status = "failed"
+            else:
+                norm_status = raw_status
 
-        if raw_status in ("success", "finished") or (finished and raw_status not in ("error", "failed", "crashed")):
-            norm_status = "success"
-        elif raw_status in ("running", "waiting", "executing") or (not finished and raw_status not in ("error", "failed", "crashed")):
-            norm_status = "running"
-        elif raw_status in ("error", "failed", "crashed"):
-            norm_status = "failed"
-        else:
-            norm_status = raw_status
+            return {
+                "reconciled": True,
+                "found": True,
+                "execution_id": exec_id,
+                "status": norm_status,
+                "finished": finished,
+            }
 
-        return {
-            "reconciled": True,
-            "found": True,
-            "execution_id": exec_id,
-            "status": norm_status,
-            "finished": finished,
-        }
+        # No exact match found
+        if ambiguous_newer:
+            return {
+                "reconciled": False,
+                "found": False,
+                "status": "outcome_unknown",
+                "error": "Found execution in window without exact correlation metadata; manual verification required",
+            }
+
+        # If all executions either were before started_after or belonged explicitly to other approvals
+        return {"reconciled": True, "found": False, "status": "not_executed"}
 
 
 _CLIENT_INSTANCE: Optional[N8nClient] = None

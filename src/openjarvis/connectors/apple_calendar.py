@@ -15,6 +15,7 @@ of 2001-01-01 00:00:00 UTC (same convention as Apple Contacts).
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -239,12 +240,13 @@ class AppleCalendarConnector(BaseConnector):
             start_ts, end_ts, start_tz, bool(all_day)
         )
 
+        pad_flag = "%#" if os.name == "nt" else "%-"
         if all_day:
-            date_str = start_dt.strftime("%A, %B %-d %Y (all day)")
+            date_str = start_dt.strftime(f"%A, %B {pad_flag}d %Y (all day)")
         else:
-            date_str = start_dt.strftime("%A, %B %-d %Y at %-I:%M %p")
+            date_str = start_dt.strftime(f"%A, %B {pad_flag}d %Y at {pad_flag}I:%M %p")
             if end_dt:
-                date_str += end_dt.strftime(" – %-I:%M %p")
+                date_str += end_dt.strftime(f" – {pad_flag}I:%M %p")
             if start_tz and start_tz != "_float":
                 date_str += f" ({start_tz})"
 

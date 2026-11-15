@@ -9,44 +9,42 @@
 
 ## 1. Executive Summary
 
-A comprehensive test verification pass was completed across the upgraded Jarvis V1 repository. The test run audited all voice speech normalization features, container sandboxing, approval state transitions, and deterministic multi-agent test fixtures:
+A comprehensive test verification pass was completed across the upgraded Jarvis V1 repository. The test run audited all voice speech normalization features, actual component speech invocations, workspace containment authorization before execution, exact n8n execution reconciliation, and deterministic multi-agent test fixtures:
 
-- **Targeted Security & Workforce Pytest Suite:** **90 passed, 1 skipped** in 19.31s (100% pass rate of active tests).
-- **Frontend Vitest Suite:** **137 passed** across 24 test files in 4.13s (100% pass rate).
+- **Targeted Security & Workforce Pytest Suite:** **120 passed, 1 skipped** in 23.41s (100% pass rate of active tests).
+- **Frontend Vitest Suite:** **148 passed** across 24 test files in 1.93s (100% pass rate).
 - **Production Build:** Vite v8.3.4 transformed and compiled 3,506 modules into static distribution bundles with zero errors.
 
 ---
 
 ## 2. Detailed Test Results by Domain
 
-### 2.0 Voice Mode Emoji Pronunciation & Normalization
+### 2.0 Voice Mode Emoji Pronunciation, Speech Synthesis & Component Testing
 **Test Suites:** `frontend/src/lib/message-text.test.ts`, `frontend/src/components/Chat/VoiceMode.test.tsx`, `frontend/src/lib/tts.test.ts`
+- `VoiceMode.test.tsx` (15 tests passed):
+  - 1. Component mounting & display text rendering: renders display text with original emojis intact in UI.
+  - 2. Condition 1 (Simple emoji): "Hello 😊" speaks "Hello" without emoji while visible DOM retains emoji.
+  - 3. Condition 2 (Punctuation + emoji): "Great work 🎉!" speaks "Great work!" without emoji while DOM retains emoji.
+  - 4. Condition 3 (Country flag): "India 🇮🇳 is beautiful." speaks "India is beautiful." without regional flag emoji.
+  - 5. Condition 4 (ZWJ developer sequence): "Developer 👨‍💻" speaks "Developer" without ZWJ emoji sequence.
+  - 6. Condition 5 (ZWJ family sequence): "Family 👨‍👩‍👧‍👦" speaks "Family" without multi-ZWJ family emojis.
+  - 7. Condition 6 (Skin tone modifier): "Good job 👍🏽" speaks "Good job" without Fitzpatrick skin tone modifier.
+  - 8. Condition 7 (Keycap sequence): "Step 1️⃣ complete." speaks "Step complete." without keycap emoji.
+  - 9. Condition 8 (Emoji-only response): "😊🎉" does NOT invoke `window.speechSynthesis.speak()`.
+  - 10. Condition 9 (Streaming progressive chunks): Chunks with emojis progressively received; speech synthesis speaks stripped sentences; visible text shows streamed emoji.
+  - 11. Condition 10 (Barge-in / interruption): Stop button click calls `window.speechSynthesis.cancel()` immediately.
+  - 12. Condition 11 (Multi-sentence with multiple emojis): "Welcome! 🚀 Let's start. 💡" speaks "Welcome! Let's start." without emojis while visible DOM shows both emojis.
+  - 13. Direct helper: `toSpeakableText()` strips emojis while preserving words.
+  - 14. Direct helper: `stripEmojis()` leaves empty string when input has only emojis.
+  - 15. Direct helper: `stripEmojis()` cleans trailing and leading emojis without stray whitespace.
 - `message-text.test.ts` (20 tests passed):
-  - 1. Strips trailing emoji with punctuation ("That's great! 😊" -> "That's great!").
-  - 2. Strips inline emoji between words ("Hello 👋 world" -> "Hello world").
-  - 3. Strips leading emoji ("🚀 Launching the service now." -> "Launching the service now.").
-  - 4. Strips symbol emoji ("Task complete! ✅" -> "Task complete!").
-  - 5. Strips ZWJ compound emojis ("The team is ready: 👨‍💻👩‍🔬" -> "The team is ready:").
-  - 6. Strips regional indicator flags ("Proudly made in 🇺🇸 and 🇯🇵." -> "Proudly made in and.").
-  - 7. Strips keycaps ("Step 1️⃣: open the file." -> "Step: open the file.").
-  - 8. Strips multi-ZWJ family emojis ("Family emoji test 👨‍👩‍👧‍👦 done." -> "Family emoji test done.").
-  - 9. Strips Fitzpatrick skin tone modified emojis ("Skin tone test 👍🏽 approved." -> "Skin tone test approved.").
-  - 10. Strips multiple consecutive emojis ("Multiple emojis 🎉 🎊 🥳 in a row!" -> "Multiple emojis in a row!").
-  - 11. Returns empty string for emoji-only text ("🚀✨🎉" -> "").
-  - 12. Handles markdown combined with emojis ("**Bold** and *italic* with 💡 idea." -> "Bold and italic with idea.").
-  - 13. Strips trailing emoji without final punctuation ("Done 👍" -> "Done").
-  - 14. Strips emoji before question mark without stray space ("Really 🤔?" -> "Really?").
-  - 15. Strips emoji between sentences cleanly ("First sentence. 😊 Second sentence." -> "First sentence. Second sentence.").
-- `VoiceMode.test.tsx` (4 tests passed):
-  - Renders display text with emojis intact in the UI.
-  - Ensures toSpeakableText strips emojis from spoken text while preserving words.
-  - Ensures stripEmojis leaves empty string when input has only emojis so empty utterances are never spoken.
-  - Verifies trailing, leading, and inline emoji stripping without stray whitespace.
+  - Covers all 15 edge cases of emoji stripping, punctuation spacing normalization, markdown removal, and think block removal.
 - `tts.test.ts` (18 tests passed):
+  - Verified shared voice output and audio playback, ensuring speakable text is passed to TTS backend without emojis.
   - Verified backend speech synthesis passes emoji-stripped speakable text to `/synthesize`.
 
-### 2.1 FORGE Command Execution & Process Isolation
-**Test Suites:** `tests/workforce/test_forge_sandboxing_p0.py`, `tests/workforce/test_forge_command_security.py`, `tests/workforce/test_forge_security_p0.py`
+### 2.1 FORGE Command Execution, Workspace Containment & Process Isolation
+**Test Suites:** `tests/workforce/test_forge_sandboxing_p0.py` (16 tests), `tests/workforce/test_forge_command_security.py` (5 tests), `tests/workforce/test_forge_security_p0.py` (7 tests)
 - `test_forge_blocks_inline_python_c_without_container`: PASSED (Inline `python -c` script fails closed with `status="blocked"` when container is unavailable).
 - `test_forge_blocks_inline_node_e_without_container`: PASSED (Inline `node -e` script fails closed with `status="blocked"`).
 - `test_forge_blocks_python_m_without_container`: PASSED (Dynamic module `python -m` fails closed with `status="blocked"`).
@@ -57,18 +55,36 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
 - `test_url_encoded_traversal_and_unc_escapes_blocked`: PASSED (URL-encoded traversal `%2e%2e` and UNC paths `\\` blocked).
 - `test_verification_statuses_are_distinct`: PASSED (Accurately differentiates `passed`, `failed`, `blocked`, and `inconclusive`).
 - `test_container_sandbox_isolation_flags`: PASSED (Verified `--network none`, `--user 1000:1000`, `--cap-drop=ALL`, `--security-opt no-new-privileges`, `--read-only`, `--tmpfs /tmp:rw,noexec,nosuid,size=64m`, `--memory 1024m`, `--cpus 2.0`, `--pids-limit 100`, and workspace rw mount).
+- `test_inline_python_with_unauthorized_cwd_blocked`: PASSED (Inline Python execution with unauthorized cwd blocked BEFORE container invocation).
+- `test_inline_node_with_unauthorized_cwd_blocked`: PASSED (Inline Node execution with unauthorized cwd blocked BEFORE container invocation).
+- `test_symlink_escape_with_container_available_blocked`: PASSED (Symlink escape blocked BEFORE container invocation even when Docker is running).
+- `test_windows_drive_root_escape_blocked`: PASSED (Windows drive root escapes `C:\` and `D:\` strictly blocked).
+- `test_unc_path_in_cwd_or_args_blocked`: PASSED (UNC paths in cwd and arguments blocked).
+- `test_nonexistent_path_resolving_outside_workspace_blocked`: PASSED (Nonexistent paths resolving outside workspace blocked).
 - `test_executable_allowlist_enforcement`: PASSED (Binaries outside allowlist blocked).
 - `test_dangerous_shell_characters_blocked`: PASSED (Shell metacharacters `;`, `&&`, `||`, `|`, `>`, `<`, `$`, `` ` `` blocked).
 - `test_req1_cross_process_workspace_locking`: PASSED (OS file locking and thread locking prevent concurrent workspace modifications).
 - `test_req2_pre_existing_dirty_files_ignored`: PASSED (Git status difference isolates active task file modifications).
 
-### 2.2 n8n Ambiguous Outcomes, Idempotency & Concurrency
-**Test Suites:** `tests/tools/test_n8n_ambiguous_outcomes_p0.py`, `tests/tools/test_n8n_concurrency.py`, `tests/tools/test_n8n_security_p0.py`
+### 2.2 n8n Ambiguous Outcomes, Idempotency & Exact Reconciliation
+**Test Suites:** `tests/tools/test_n8n_ambiguous_outcomes_p0.py` (20 tests), `tests/tools/test_n8n_concurrency.py` (3 tests), `tests/tools/test_n8n_security_p0.py` (11 tests)
 - `test_classify_network_failure_pre_vs_post`: PASSED (Accurately classifies DNS failure / ConnectionRefused as `pre_transmission`, and socket timeout / HTTP 504 as `outcome_unknown`).
 - `test_post_transmission_timeout_transitions_to_outcome_unknown_no_auto_restore`: PASSED (Socket timeout during request transmission transitions approval to `STATUS_OUTCOME_UNKNOWN` and blocks immediate retry).
 - `test_pre_transmission_failure_safely_restores_approved`: PASSED (Connection refused before handshake restores approval to `STATUS_APPROVED`).
 - `test_reconcile_outcome_unknown_with_n8n_execution_api`: PASSED (Reconciliation queries n8n execution log; transitions to `STATUS_EXECUTED` on success or `STATUS_APPROVED` if confirmed never started).
 - `test_reconcile_correlates_by_started_after_and_idempotency_key`: PASSED (Reconciliation ignores older executions and correctly matches via timestamp and key).
+- `test_reconcile_exact_approval_match`: PASSED (Exact approval match in execution metadata successfully reconciles to `STATUS_EXECUTED`).
+- `test_reconcile_exact_idempotency_match`: PASSED (Exact idempotency key match in metadata successfully reconciles).
+- `test_reconcile_unrelated_newer_execution_returns_outcome_unknown`: PASSED (Unrelated execution in window without exact correlation metadata returns `outcome_unknown`, never guesses).
+- `test_reconcile_older_execution_returns_not_executed`: PASSED (Executions prior to dispatch window are ignored; confirmed `not_executed`).
+- `test_reconcile_same_workflow_with_another_approval_not_matched`: PASSED (Execution for same workflow belonging to another approval is NOT matched).
+- `test_reconcile_missing_metadata_returns_outcome_unknown`: PASSED (API executions lacking correlation metadata return `outcome_unknown`).
+- `test_reconcile_multiple_executions_correlates_only_exact`: PASSED (Multiple concurrent executions correlate ONLY the exact matching approval ID).
+- `test_reconcile_paginated_results_finds_execution_on_subsequent_page`: PASSED (Traverses cursor pagination and locates execution on page 2).
+- `test_reconcile_empty_first_page_with_additional_pages`: PASSED (Empty first page is not treated as proof of non-execution when nextCursor is present).
+- `test_reconcile_incomplete_api_response_returns_outcome_unknown`: PASSED (Malformed API response returns `outcome_unknown`).
+- `test_reconcile_api_unavailable_returns_outcome_unknown`: PASSED (Unreachable execution API returns `outcome_unknown`).
+- `test_duplicate_retry_prevention_while_ambiguous`: PASSED (Approval remains in `STATUS_OUTCOME_UNKNOWN` and blocks retry).
 - `test_execution_ledger_tracks_attempts_and_outcomes`: PASSED (Ledger tracks dispatch and outcome records for full auditability).
 - `test_idempotency_key_sent_in_requests`: PASSED (Sends `X-Idempotency-Key` header and `_idempotency_key` payload parameter).
 - `test_concurrent_claim_race_single_winner`: PASSED (20 concurrent threads compete for single approval; exactly 1 claims and 19 fail).
@@ -76,13 +92,16 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
 - `test_path_sanitization_rejects_directory_traversal`: PASSED (Traversal tokens in endpoints rejected).
 
 ### 2.3 Model Discovery & Capability Policy
-**Test Suites:** `tests/models/test_model_discovery.py`, `tests/models/test_model_capability_policy.py`, `tests/models/test_model_selection_p0.py`
+**Test Suites:** `tests/models/test_model_discovery.py` (15 tests), `tests/models/test_model_capability_policy.py` (5 tests), `tests/models/test_model_selection_p0.py` (10 tests)
 - `test_discover_all_returns_models_mocked_deterministic`: PASSED (Mocked provider responses verify discovery without real API keys).
 - `test_discovery_configured_but_unreachable_provider`: PASSED (Connection refused recorded cleanly as `offline` with 0 models).
 - `test_discovery_invalid_api_key`: PASSED (HTTP 401 recorded as `auth_error` with `connected=False` and 0 models).
+- `test_discovery_forbidden_api_key_403`: PASSED (HTTP 403 recorded as `auth_error` with `connected=False` and 0 models).
 - `test_discovery_cloud_empty_model_list`: PASSED (Empty model catalog recorded as `degraded` with `connected=False` and 0 models).
 - `test_discovery_empty_model_list`: PASSED (Empty local model catalog recorded cleanly).
-- `test_discovery_rate_limited`: PASSED (HTTP 429 handled without crash).
+- `test_discovery_rate_limited`: PASSED (HTTP 429 recorded as `rate_limited` with `connected=True` and 0 models).
+- `test_discovery_endpoint_not_found_404`: PASSED (HTTP 404 recorded as `unsupported_endpoint` with `connected=True`).
+- `test_discovery_connection_failure_unreachable`: PASSED (Timeout / connection failure recorded as `unreachable` with `connected=False`).
 - `test_discovery_zero_credentials_unconfigured`: PASSED (Zero credentials environment returns empty list and clean unconfigured status).
 - `test_deepseek_r1_not_marked_as_tool_capable`: PASSED (`deepseek-reasoner` explicitly marked as non-tool).
 - `test_confidence_policy_enforcement`: PASSED (`CONFIRMED_ONLY`, `DECLARED_OR_CONFIRMED`, `ALLOW_INFERRED` enforced; unknown rejected).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -74,7 +75,8 @@ def test_timezone_is_converted_before_display(tmp_path):
 
     document = list(AppleCalendarConnector(db_path=str(db)).sync())[0]
     local_start = start.astimezone(ZoneInfo("America/Los_Angeles"))
-    assert local_start.strftime("%-I:%M %p") in document.content
+    pad = "%#" if os.name == "nt" else "%-"
+    assert local_start.strftime(f"{pad}I:%M %p") in document.content
     assert document.metadata["start"] == local_start.isoformat()
 
 
