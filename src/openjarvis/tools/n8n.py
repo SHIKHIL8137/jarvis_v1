@@ -483,6 +483,14 @@ class N8nClient:
         Correlates against workflow_id, started_after timestamp, approval_id, and idempotency_key.
         Requires exact correlation metadata. Timestamp alone NEVER proves an execution belongs to an approval.
         """
+        if not workflow_id:
+            return {
+                "reconciled": False,
+                "found": False,
+                "status": "outcome_unknown",
+                "error": "workflow_id is required for reconciliation",
+            }
+
         if not approval_id and not idempotency_key:
             return {
                 "reconciled": False,
@@ -494,6 +502,8 @@ class N8nClient:
         clean_id = _sanitize_path(workflow_id).lstrip("/")
         all_items: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
+        pagination_complete = False
+        truncated = False
 
         for _ in range(max_pages):
             cursor_param = f"&cursor={urllib.parse.quote(str(cursor))}" if cursor else ""
@@ -531,7 +541,15 @@ class N8nClient:
             if isinstance(res, list):
                 page_items = res
                 next_cursor = None
+                pagination_complete = True
             else:
+                if "data" not in res and "id" not in res:
+                    return {
+                        "reconciled": False,
+                        "found": False,
+                        "status": "outcome_unknown",
+                        "error": "Incomplete API response: missing data field",
+                    }
                 page_items = res.get("data")
                 if not isinstance(page_items, list):
                     if "id" in res:
@@ -542,12 +560,16 @@ class N8nClient:
 
             all_items.extend(page_items)
 
-            if not next_cursor or next_cursor == cursor:
+            if not next_cursor:
+                pagination_complete = True
+                break
+            if next_cursor == cursor:
+                # Cursor stalled / repeated; truncate
+                truncated = True
                 break
             cursor = next_cursor
-
-        if not all_items:
-            return {"reconciled": True, "found": False, "status": "not_executed"}
+        else:
+            truncated = True
 
         exact_matches = []
         ambiguous_newer = []
@@ -558,9 +580,9 @@ class N8nClient:
                 continue
             item_id = str(item.get("id", ""))
 
-            # Verify workflowId if present in item
+            # Require exact workflow ID in execution metadata; do not accept missing workflow identity
             exec_wf_id = str(item.get("workflowId") or item.get("workflowData", {}).get("id") or "")
-            if exec_wf_id and exec_wf_id != clean_id:
+            if not exec_wf_id or exec_wf_id != clean_id:
                 continue
 
             custom_data = item.get("customData") or item.get("metadata") or item.get("additionalData") or {}
@@ -616,6 +638,14 @@ class N8nClient:
             }
 
         # No exact match found
+        if truncated:
+            return {
+                "reconciled": False,
+                "found": False,
+                "status": "outcome_unknown",
+                "error": "Pagination limit reached; execution history truncated",
+            }
+
         if ambiguous_newer:
             return {
                 "reconciled": False,
@@ -624,7 +654,7 @@ class N8nClient:
                 "error": "Found execution in window without exact correlation metadata; manual verification required",
             }
 
-        # If all executions either were before started_after or belonged explicitly to other approvals
+        # If all executions either were before started_after or belonged explicitly to other approvals, and pagination was complete
         return {"reconciled": True, "found": False, "status": "not_executed"}
 
 

@@ -195,7 +195,93 @@ class IsolatedVerificationRunner:
         return clean_env
 
     @staticmethod
+    def _multi_unquote(s: str, max_passes: int = 5) -> str:
+        """Decode URL-encoded string across repeated passes."""
+        import urllib.parse
+
+        cur = s
+        for _ in range(max_passes):
+            next_d = urllib.parse.unquote(cur)
+            if next_d == cur:
+                break
+            cur = next_d
+        return cur
+
+    @classmethod
+    def scan_raw_command_for_path_escapes(
+        cls,
+        raw_cmd: str,
+        resolved_cwd: Path,
+        allowed_dirs: List[Path],
+    ) -> Optional[str]:
+        """Scan raw command line before shlex tokenization so backslashes in Windows paths and UNC paths are not consumed on POSIX."""
+        import re
+        import sys
+        import urllib.parse
+
+        # 1. Scan for raw UNC paths (e.g. \\server\share or //server/share)
+        unc_match = re.search(r'(?:^|[\s"\'=])((\\\\[^\s"\'><|;&]+)|(//[^\s"\'><|;&]+))', raw_cmd)
+        if unc_match:
+            unc_cand = unc_match.group(1).strip("\"'`;")
+            return f"Security boundary violation: UNC paths prohibited in argument '{unc_cand}'"
+
+        # 2. Check for URL-encoded traversal in raw command
+        if "%2e%2e" in raw_cmd.lower() or "%2e" in raw_cmd.lower():
+            decoded_cmd = cls._multi_unquote(raw_cmd)
+            if "%2e%2e" in raw_cmd.lower() or ".." in decoded_cmd:
+                for word in raw_cmd.split():
+                    clean_w = word.strip("\"'`;")
+                    if "%2e%2e" in clean_w.lower() or ".." in cls._multi_unquote(clean_w):
+                        return f"Security boundary violation: path traversal prohibited in argument '{clean_w}'"
+                return f"Security boundary violation: path traversal prohibited in argument '{raw_cmd}'"
+
+        # 3. Check for raw relative traversals with backslashes or slashes
+        if (
+            re.search(r'(?:^|[\s"\'=/\\a-zA-Z0-9_-])\.\.[\\/]', raw_cmd)
+            or re.search(r'[\\/]\.\.(?:[\\/\s"\'><|;&]|$)', raw_cmd)
+            or re.search(r'(?:^|[\s"\'=])\.\.(?:[\s"\'><|;&]|$)', raw_cmd)
+        ):
+            for word in raw_cmd.split():
+                clean_w = word.strip("\"'`;")
+                if ".." in clean_w:
+                    return f"Security boundary violation: path traversal prohibited in argument '{clean_w}'"
+
+        # 4. Check for Windows drive roots (e.g. C:\ or D:/ or C:)
+        drive_root_match = re.search(r'(?:^|[\s"\'=])([a-zA-Z]:[/\\]?)(?:[\s"\'><|;&]|$)', raw_cmd)
+        if drive_root_match:
+            drive_tok = drive_root_match.group(1).strip("\"'`;")
+            return f"Security boundary violation: drive-root escape prohibited in argument '{drive_tok}'"
+
+        # 5. Check for Windows absolute paths (e.g. C:\Windows or C:\nonexistent)
+        win_abs_match = re.search(r'(?:^|[\s"\'=])([a-zA-Z]:[\\/][^\s"\'><|;&]*)', raw_cmd)
+        if win_abs_match:
+            win_path_tok = win_abs_match.group(1).strip("\"'`;")
+            if sys.platform != "win32":
+                return f"Security boundary violation: argument '{win_path_tok}' resolves outside authorized workspace via symlink or escape."
+            else:
+                try:
+                    cand_p = Path(win_path_tok).resolve()
+                    if not is_path_within_allowed(cand_p, allowed_dirs):
+                        return f"Security boundary violation: argument '{win_path_tok}' resolves outside authorized workspace via symlink or escape."
+                except Exception:
+                    return f"Security boundary violation: argument '{win_path_tok}' resolves outside authorized workspace via symlink or escape."
+
+        # 6. Check for sensitive absolute Linux paths (e.g. /etc/passwd)
+        etc_match = re.search(r'(?:^|[\s"\'=])(/etc(?:/[^\s"\'><|;&]*)?)', raw_cmd, re.IGNORECASE)
+        if etc_match:
+            etc_tok = etc_match.group(1).strip("\"'`;")
+            try:
+                cand_p = Path(etc_tok).resolve()
+                if not is_path_within_allowed(cand_p, allowed_dirs):
+                    return f"Security boundary violation: path traversal prohibited in argument '{etc_tok}'"
+            except Exception:
+                return f"Security boundary violation: path traversal prohibited in argument '{etc_tok}'"
+
+        return None
+
+    @classmethod
     def check_symlink_and_traversal_escapes(
+        cls,
         resolved_cwd: Path,
         tokens: List[str],
         allowed_dirs: List[Path],
@@ -203,6 +289,7 @@ class IsolatedVerificationRunner:
         """Validate that neither the working directory nor any path in arguments escapes authorized roots via symlinks, traversal, UNC paths, drive roots, or encoded sequences."""
         import urllib.parse
         import re
+        import sys
 
         # 1. Check if cwd is a UNC path or symlink resolving outside allowed dirs
         cwd_str = str(resolved_cwd)
@@ -219,6 +306,9 @@ class IsolatedVerificationRunner:
         # 2. Check each token for path traversal, UNC paths, drive-root escapes, and symlink escapes
         for tok in tokens[1:]:
             clean_tok = tok.strip()
+            # If standard option flag without '=', skip (e.g. -v, --verbose, -m, -c)
+            if clean_tok.startswith("-") and "=" not in clean_tok:
+                continue
 
             candidates_to_check = [clean_tok]
             if "=" in clean_tok:
@@ -226,12 +316,7 @@ class IsolatedVerificationRunner:
 
             for part in candidates_to_check:
                 # Multi-pass URL-decode token if encoded
-                decoded_part = part
-                for _ in range(3):
-                    next_decoded = urllib.parse.unquote(decoded_part)
-                    if next_decoded == decoded_part:
-                        break
-                    decoded_part = next_decoded
+                decoded_part = cls._multi_unquote(part)
 
                 lower_clean = part.lower()
                 lower_decoded = decoded_part.lower()
@@ -275,13 +360,37 @@ class IsolatedVerificationRunner:
                     except Exception:
                         return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
 
-                # Check if token resolves to a filesystem path (existing or nonexistent)
+                # Windows absolute path on POSIX or resolving outside allowed dirs on Windows
+                if re.match(r"^[a-zA-Z]:[/\\]", part) or re.match(r"^[a-zA-Z]:[/\\]", decoded_part):
+                    if sys.platform != "win32":
+                        return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
+                    else:
+                        try:
+                            cand_p = Path(decoded_part).resolve()
+                            if not is_path_within_allowed(cand_p, allowed_dirs):
+                                return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
+                        except Exception:
+                            return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
+
+                # Symlink check for relative and absolute paths
+                try:
+                    cand_path = Path(decoded_part)
+                    if not cand_path.is_absolute():
+                        cand_path = resolved_cwd / cand_path
+                    if cand_path.is_symlink():
+                        target = cand_path.resolve()
+                        if not is_path_within_allowed(target, allowed_dirs):
+                            return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
+                except Exception:
+                    pass
+
+                # Resolution check for any path-like argument, filename, or nonexistent path
                 is_path_like = (
-                    any(part.startswith(p) for p in ("/", "\\"))
+                    any(part.startswith(p) for p in ("/", "\\", "."))
                     or re.match(r"^[a-zA-Z]:", part) is not None
-                    or (part.startswith((".", "./", ".\\")) and ("/" in part or "\\" in part))
                     or "/" in part
                     or "\\" in part
+                    or (resolved_cwd / decoded_part).exists()
                 )
                 if is_path_like:
                     try:
@@ -308,12 +417,15 @@ class IsolatedVerificationRunner:
         Returns structured dict with keys:
             command, passed, status, exit_code, duration_seconds, output, sandbox_mode
         """
+        # 1. Preserve original inputs before parsing
+        raw_cmd = str(cmd)
+        raw_cwd = str(cwd)
+        clean_cmd = raw_cmd.strip()
+        clean_cwd = raw_cwd.strip()
         t0 = time.time()
         timeout_sec = timeout or self.timeout
-        resolved_cwd = Path(cwd).resolve()
         is_trusted = trusted_environment or (os.environ.get("OPENJARVIS_TRUSTED_ENVIRONMENT", "").lower() in ("1", "true", "yes"))
 
-        clean_cmd = cmd.strip()
         if not clean_cmd:
             return {
                 "command": cmd,
@@ -325,7 +437,100 @@ class IsolatedVerificationRunner:
                 "sandbox_mode": "none",
             }
 
-        # 1. Reject obvious shell attacks and fork bombs
+        # 2. WORKSPACE DIRECTORY AUTHORIZATION & CWD CONTAINMENT VALIDATION
+        # MUST BE EVALUATED BEFORE ANY EXECUTION BRANCH (inline execution, container execution, host execution, metadata)
+        if clean_cwd.startswith(("\\\\", "//")) or re.search(r"^[/\\]{2}", clean_cwd):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: UNC paths prohibited in working directory '{cwd}'",
+                "sandbox_mode": "blocked",
+            }
+
+        decoded_cwd = self._multi_unquote(clean_cwd)
+        if "%2e%2e" in clean_cwd.lower() or "%2e%2e" in decoded_cwd.lower() or ".." in decoded_cwd:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: URL-encoded traversal prohibited in working directory '{cwd}'",
+                "sandbox_mode": "blocked",
+            }
+
+        if re.match(r"^[a-zA-Z]:[/\\]?$", clean_cwd) or clean_cwd in ("/", "\\"):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: drive-root escape prohibited in working directory '{cwd}'",
+                "sandbox_mode": "blocked",
+            }
+
+        cfg = load_config()
+        configured_allowed = getattr(cfg.security, "allowed_dirs", None)
+        if configured_allowed:
+            allowed_dirs = configured_allowed
+            safe_by_default = False
+        else:
+            allowed_dirs = get_safe_default_dirs()
+            safe_by_default = True
+
+        if sys.platform != "win32" and re.match(r"^[a-zA-Z]:", clean_cwd) and not any(str(clean_cwd) == str(d) or str(clean_cwd).startswith(str(d)) for d in allowed_dirs):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: cwd '{cwd}' is outside authorized workspace.",
+                "sandbox_mode": "blocked",
+            }
+
+        try:
+            resolved_cwd = Path(clean_cwd).resolve()
+        except Exception as cwd_err:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: cannot resolve working directory: {cwd_err}",
+                "sandbox_mode": "blocked",
+            }
+
+        if not is_path_within_allowed(resolved_cwd, allowed_dirs, safe_by_default=safe_by_default):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: cwd '{resolved_cwd}' is outside authorized workspace.",
+                "sandbox_mode": "blocked",
+            }
+
+        # 3. Scan RAW command line for UNC paths, Windows drive paths, and traversals before shlex consumes backslashes
+        raw_cmd_escape_err = self.scan_raw_command_for_path_escapes(raw_cmd, resolved_cwd, allowed_dirs)
+        if raw_cmd_escape_err:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": raw_cmd_escape_err,
+                "sandbox_mode": "blocked",
+            }
+
+        # 4. Reject obvious shell attacks and fork bombs
         dangerous_patterns = ["rm -rf /", "mkfs", "format ", "del /s /q c:", ":(){ :|:& };:"]
         if any(d in clean_cmd.lower() for d in dangerous_patterns):
             return {
@@ -338,7 +543,7 @@ class IsolatedVerificationRunner:
                 "sandbox_mode": "blocked",
             }
 
-        # 2. Tokenize command safely
+        # 5. Tokenize command safely
         try:
             raw_tokens = shlex.split(clean_cmd, posix=(sys.platform != "win32"))
             tokens = []
@@ -369,7 +574,7 @@ class IsolatedVerificationRunner:
                 "sandbox_mode": "none",
             }
 
-        # 3. Check executable against explicit allowlist
+        # 6. Check executable against explicit allowlist
         # NOTE: Executable allowlist DOES NOT provide process isolation.
         raw_exec = tokens[0]
         exec_stem = Path(raw_exec).stem.lower()
@@ -387,51 +592,7 @@ class IsolatedVerificationRunner:
                 "sandbox_mode": "blocked",
             }
 
-        # 4. WORKSPACE AUTHORIZATION & SYMLINK/TRAVERSAL ESCAPE VALIDATION
-        # MUST BE EVALUATED BEFORE ANY EXECUTION BRANCH (inline execution, container execution, host execution, metadata)
-        raw_cwd_str = str(cwd).strip()
-        lower_cwd = raw_cwd_str.lower()
-        if raw_cwd_str.startswith(("\\\\", "//")):
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": VerificationOutcome.BLOCKED.value,
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Security boundary violation: UNC paths prohibited in working directory '{cwd}'",
-                "sandbox_mode": "blocked",
-            }
-        if "%2e%2e" in lower_cwd or "%2e" in lower_cwd:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": VerificationOutcome.BLOCKED.value,
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Security boundary violation: URL-encoded traversal prohibited in working directory '{cwd}'",
-                "sandbox_mode": "blocked",
-            }
-
-        cfg = load_config()
-        configured_allowed = getattr(cfg.security, "allowed_dirs", None)
-        if configured_allowed:
-            allowed_dirs = configured_allowed
-            safe_by_default = False
-        else:
-            allowed_dirs = get_safe_default_dirs()
-            safe_by_default = True
-
-        if not is_path_within_allowed(resolved_cwd, allowed_dirs, safe_by_default=safe_by_default):
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": VerificationOutcome.BLOCKED.value,
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Security boundary violation: cwd '{resolved_cwd}' is outside authorized workspace.",
-                "sandbox_mode": "blocked",
-            }
-
+        # 7. Check token-level path traversal and symlink escapes
         escape_err = self.check_symlink_and_traversal_escapes(resolved_cwd, tokens, allowed_dirs)
         if escape_err:
             return {

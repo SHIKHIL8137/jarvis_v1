@@ -232,6 +232,7 @@ def test_reconcile_correlates_by_started_after_and_idempotency_key():
         # Old execution before our request
         {
             "id": "exec-old-001",
+            "workflowId": "wf-test",
             "status": "success",
             "createdAt": "2026-11-15T10:00:00.000Z",
             "finished": True,
@@ -239,6 +240,7 @@ def test_reconcile_correlates_by_started_after_and_idempotency_key():
         # Current execution matching our request
         {
             "id": "exec-new-002",
+            "workflowId": "wf-test",
             "status": "running",
             "createdAt": "2026-11-15T12:00:05.000Z",
             "finished": False,
@@ -296,6 +298,7 @@ def test_reconcile_exact_approval_match():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     item = {
         "id": "exec-exact-appr",
+        "workflowId": "wf-1",
         "status": "success",
         "createdAt": "2026-11-15T12:00:00.000Z",
         "finished": True,
@@ -318,6 +321,7 @@ def test_reconcile_exact_idempotency_match():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     item = {
         "id": "exec-exact-idem",
+        "workflowId": "wf-1",
         "status": "success",
         "createdAt": "2026-11-15T12:00:00.000Z",
         "finished": True,
@@ -340,6 +344,7 @@ def test_reconcile_unrelated_newer_execution_returns_outcome_unknown():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     item = {
         "id": "exec-unrelated-newer",
+        "workflowId": "wf-1",
         "status": "success",
         "createdAt": "2026-11-15T12:05:00.000Z",
         "finished": True,
@@ -362,6 +367,7 @@ def test_reconcile_older_execution_returns_not_executed():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     item = {
         "id": "exec-older",
+        "workflowId": "wf-1",
         "status": "success",
         "createdAt": "2026-11-15T08:00:00.000Z",
         "finished": True,
@@ -382,6 +388,7 @@ def test_reconcile_same_workflow_with_another_approval_not_matched():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     item = {
         "id": "exec-other-appr",
+        "workflowId": "wf-1",
         "status": "success",
         "createdAt": "2026-11-15T12:01:00.000Z",
         "finished": True,
@@ -403,6 +410,7 @@ def test_reconcile_missing_metadata_returns_outcome_unknown():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     item = {
         "id": "exec-no-metadata",
+        "workflowId": "wf-1",
         "status": "running",
         "createdAt": "2026-11-15T12:00:01.000Z",
         "finished": False,
@@ -423,9 +431,9 @@ def test_reconcile_multiple_executions_correlates_only_exact():
     """When multiple executions exist, only the exact matching execution is correlated."""
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
     items = [
-        {"id": "exec-old", "createdAt": "2026-11-15T09:00:00Z", "status": "success", "finished": True},
-        {"id": "exec-other", "createdAt": "2026-11-15T12:00:00Z", "status": "failed", "customData": {"approval_id": "other"}},
-        {"id": "exec-exact-match", "createdAt": "2026-11-15T12:00:05Z", "status": "success", "finished": True, "customData": {"approval_id": "our-appr"}},
+        {"id": "exec-old", "workflowId": "wf-1", "createdAt": "2026-11-15T09:00:00Z", "status": "success", "finished": True},
+        {"id": "exec-other", "workflowId": "wf-1", "createdAt": "2026-11-15T12:00:00Z", "status": "failed", "customData": {"approval_id": "other"}},
+        {"id": "exec-exact-match", "workflowId": "wf-1", "createdAt": "2026-11-15T12:00:05Z", "status": "success", "finished": True, "customData": {"approval_id": "our-appr"}},
     ]
     with patch.object(client, "_make_request", return_value={"data": items}):
         res = client.reconcile_workflow_execution(
@@ -443,11 +451,11 @@ def test_reconcile_paginated_results_finds_execution_on_subsequent_page():
     client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
 
     page1 = {
-        "data": [{"id": "exec-p1", "createdAt": "2026-11-15T12:00:00Z", "customData": {"approval_id": "other"}}],
+        "data": [{"id": "exec-p1", "workflowId": "wf-1", "createdAt": "2026-11-15T12:00:00Z", "customData": {"approval_id": "other"}}],
         "nextCursor": "cursor-page-2",
     }
     page2 = {
-        "data": [{"id": "exec-p2-target", "createdAt": "2026-11-15T12:00:02Z", "status": "success", "finished": True, "customData": {"approval_id": "target-appr"}}],
+        "data": [{"id": "exec-p2-target", "workflowId": "wf-1", "createdAt": "2026-11-15T12:00:02Z", "status": "success", "finished": True, "customData": {"approval_id": "target-appr"}}],
         "nextCursor": None,
     }
 
@@ -473,7 +481,7 @@ def test_reconcile_empty_first_page_with_additional_pages():
 
     page1 = {"data": [], "nextCursor": "cursor-p2"}
     page2 = {
-        "data": [{"id": "exec-p2", "createdAt": "2026-11-15T12:00:02Z", "status": "running", "finished": False, "customData": {"approval_id": "appr-p2"}}],
+        "data": [{"id": "exec-p2", "workflowId": "wf-1", "createdAt": "2026-11-15T12:00:02Z", "status": "running", "finished": False, "customData": {"approval_id": "appr-p2"}}],
         "nextCursor": None,
     }
 
@@ -556,4 +564,91 @@ def test_duplicate_retry_prevention_while_ambiguous(tmp_path):
     claimed, _, reason = store.claim_approval_for_execution(act.id, "n8n:workflow:wf-retry:hash123", "n8n_execute_workflow")
     assert claimed is False
     assert "outcome_unknown" in reason
+
+
+def test_reconcile_empty_completed_result_returns_not_executed():
+    """When API returns an empty completed page (no nextCursor), authoritatively conclude not_executed."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+    with patch.object(client, "_make_request", return_value={"data": [], "nextCursor": None}):
+        res = client.reconcile_workflow_execution(
+            workflow_id="wf-empty",
+            started_after=1794743990.0,
+            approval_id="appr-empty",
+        )
+        assert res["reconciled"] is True
+        assert res["found"] is False
+        assert res["status"] == "not_executed"
+
+
+def test_reconcile_missing_workflow_id_returns_outcome_unknown():
+    """Missing workflow ID is rejected and returns outcome_unknown."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+    res = client.reconcile_workflow_execution(
+        workflow_id="",
+        started_after=1794743990.0,
+        approval_id="appr-1",
+    )
+    assert res["reconciled"] is False
+    assert res["status"] == "outcome_unknown"
+    assert "workflow_id is required" in res["error"]
+
+
+def test_reconcile_wrong_workflow_id_in_execution_record_ignored():
+    """Execution records bearing mismatched or missing workflowId are rejected."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+    items = [
+        {"id": "exec-wrong-wf", "workflowId": "wrong-workflow", "createdAt": "2026-11-15T12:00:05Z", "customData": {"approval_id": "appr-target"}},
+        {"id": "exec-no-wf-id", "workflowId": None, "createdAt": "2026-11-15T12:00:06Z", "customData": {"approval_id": "appr-target"}},
+    ]
+    with patch.object(client, "_make_request", return_value={"data": items, "nextCursor": None}):
+        res = client.reconcile_workflow_execution(
+            workflow_id="target-workflow",
+            started_after=1794743990.0,
+            approval_id="appr-target",
+        )
+        # Neither matches target-workflow, so no match found and no ambiguous in-window execution for this workflow
+        assert res["reconciled"] is True
+        assert res["found"] is False
+        assert res["status"] == "not_executed"
+
+
+def test_reconcile_api_pagination_limit_reached_returns_outcome_unknown():
+    """When pagination reaches max_pages while more pages exist, outcome is unknown."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+
+    page_count = 0
+
+    def mock_request(endpoint):
+        nonlocal page_count
+        page_count += 1
+        return {
+            "data": [{"id": f"exec-{page_count}", "workflowId": "wf-paged", "createdAt": "2026-11-15T10:00:00Z"}],
+            "nextCursor": f"cursor-page-{page_count+1}",
+        }
+
+    with patch.object(client, "_make_request", side_effect=mock_request):
+        res = client.reconcile_workflow_execution(
+            workflow_id="wf-paged",
+            started_after=1794743990.0,
+            approval_id="appr-unfound",
+            max_pages=2,
+        )
+        assert res["reconciled"] is False
+        assert res["found"] is False
+        assert res["status"] == "outcome_unknown"
+        assert "Pagination limit reached" in res["error"]
+
+
+def test_reconcile_missing_both_approval_and_idempotency_keys():
+    """Attempting reconciliation without any correlation metadata returns outcome_unknown."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+    res = client.reconcile_workflow_execution(
+        workflow_id="wf-test",
+        approval_id=None,
+        idempotency_key=None,
+    )
+    assert res["reconciled"] is False
+    assert res["status"] == "outcome_unknown"
+    assert "Insufficient correlation metadata" in res["error"]
+
 

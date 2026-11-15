@@ -56,13 +56,28 @@ def test_scenario_a_multi_file_coding_and_verification(clean_workforce, tmp_path
             return {"verdict": "verified", "acceptance_criteria_met": True}, None
         return {"status": "ok"}, None
 
-    # 3. Execute plan
-    result = orchestrator.execute_multi_agent_plan(
-        task_id="task-scenario-a",
-        user_request="Fix authentication token refresh bug and add unit tests",
-        steps=steps,
-        step_executor=mock_step_executor,
+    # 3. Execute plan with deterministic mock model runtime
+    from openjarvis.models.capabilities import SelectionResult
+
+    mock_sel = SelectionResult(
+        model_id="mock-qwen-coder:latest",
+        provider="mock",
+        task_type="coding",
+        reason="Deterministic mock runtime for test",
+        policy="local_first",
+        is_local=True,
+        context_length=8192,
+        score=1.0,
+        is_compatible=True,
     )
+
+    with patch("openjarvis.models.selector.ModelSelectionEngine.select_model", return_value=mock_sel):
+        result = orchestrator.execute_multi_agent_plan(
+            task_id="task-scenario-a",
+            user_request="Fix authentication token refresh bug and add unit tests",
+            steps=steps,
+            step_executor=mock_step_executor,
+        )
 
     assert result["status"] == "completed"
     assert result["completed_steps"] == len(steps)

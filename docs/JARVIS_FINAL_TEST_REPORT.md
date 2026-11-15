@@ -2,18 +2,18 @@
 
 **Date:** 2026-11-15  
 **Auditor:** Principal AI Systems & Security Architect  
-**Version:** Jarvis V1 Release Candidate  
-**Environment:** Windows 11 / Linux Compatible (Python 3.12.15, Node.js, Vite 8.3.4, Vitest 5.1.0, Pytest 9.2.0)
+**Version:** Jarvis V1 Release Candidate (Version 9 Pass)  
+**Environment:** Windows 11 / Linux Compatible (Python 3.12.15, Node.js v24.16.0, Vite 8.3.4, Vitest 5.0.3, Pytest 9.2.0)
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive test verification pass was completed across the upgraded Jarvis V1 repository. The test run audited all voice speech normalization features, actual component speech invocations, workspace containment authorization before execution, exact n8n execution reconciliation, and deterministic multi-agent test fixtures:
+A comprehensive, end-to-end regression test verification pass was completed across the upgraded Jarvis V1 repository. The test run audited all voice speech normalization features, actual component speech invocations, raw command and workspace path containment authorization before execution, exact n8n execution reconciliation with pagination truncation safety, model discovery REST fallback probes, and deterministic multi-agent test fixtures:
 
-- **Targeted Security & Workforce Pytest Suite:** **120 passed, 1 skipped** in 23.41s (100% pass rate of active tests).
-- **Frontend Vitest Suite:** **148 passed** across 24 test files in 1.93s (100% pass rate).
-- **Production Build:** Vite v8.3.4 transformed and compiled 3,506 modules into static distribution bundles with zero errors.
+- **Targeted Security & Workforce Pytest Suite (18 Test Files):** **128 passed, 1 skipped** in 43.79s (100% pass rate of active tests).
+- **Frontend Vitest Suite:** **148 passed** across 24 test files in 3.09s (100% pass rate).
+- **Production Build:** Vite v8.3.4 transformed and compiled 3,506 modules into static distribution bundles in 2.04s with zero errors, generating PWA service worker precache (2,199.81 KiB).
 
 ---
 
@@ -44,7 +44,7 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
   - Verified backend speech synthesis passes emoji-stripped speakable text to `/synthesize`.
 
 ### 2.1 FORGE Command Execution, Workspace Containment & Process Isolation
-**Test Suites:** `tests/workforce/test_forge_sandboxing_p0.py` (16 tests), `tests/workforce/test_forge_command_security.py` (5 tests), `tests/workforce/test_forge_security_p0.py` (7 tests)
+**Test Suites:** `tests/workforce/test_forge_sandboxing_p0.py` (18 tests), `tests/workforce/test_forge_command_security.py` (5 tests), `tests/workforce/test_forge_security_p0.py` (7 tests)
 - `test_forge_blocks_inline_python_c_without_container`: PASSED (Inline `python -c` script fails closed with `status="blocked"` when container is unavailable).
 - `test_forge_blocks_inline_node_e_without_container`: PASSED (Inline `node -e` script fails closed with `status="blocked"`).
 - `test_forge_blocks_python_m_without_container`: PASSED (Dynamic module `python -m` fails closed with `status="blocked"`).
@@ -61,13 +61,15 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
 - `test_windows_drive_root_escape_blocked`: PASSED (Windows drive root escapes `C:\` and `D:\` strictly blocked).
 - `test_unc_path_in_cwd_or_args_blocked`: PASSED (UNC paths in cwd and arguments blocked).
 - `test_nonexistent_path_resolving_outside_workspace_blocked`: PASSED (Nonexistent paths resolving outside workspace blocked).
+- `test_windows_paths_simulated_on_posix_blocked`: PASSED (Windows drive roots and UNC paths simulated on POSIX environments blocked).
+- `test_repeated_url_encoded_traversal_blocked`: PASSED (Multi-pass encoded traversal `%252e%252e` blocked).
 - `test_executable_allowlist_enforcement`: PASSED (Binaries outside allowlist blocked).
 - `test_dangerous_shell_characters_blocked`: PASSED (Shell metacharacters `;`, `&&`, `||`, `|`, `>`, `<`, `$`, `` ` `` blocked).
 - `test_req1_cross_process_workspace_locking`: PASSED (OS file locking and thread locking prevent concurrent workspace modifications).
 - `test_req2_pre_existing_dirty_files_ignored`: PASSED (Git status difference isolates active task file modifications).
 
 ### 2.2 n8n Ambiguous Outcomes, Idempotency & Exact Reconciliation
-**Test Suites:** `tests/tools/test_n8n_ambiguous_outcomes_p0.py` (20 tests), `tests/tools/test_n8n_concurrency.py` (3 tests), `tests/tools/test_n8n_security_p0.py` (11 tests)
+**Test Suites:** `tests/tools/test_n8n_ambiguous_outcomes_p0.py` (25 tests), `tests/tools/test_n8n_concurrency.py` (3 tests), `tests/tools/test_n8n_security_p0.py` (11 tests)
 - `test_classify_network_failure_pre_vs_post`: PASSED (Accurately classifies DNS failure / ConnectionRefused as `pre_transmission`, and socket timeout / HTTP 504 as `outcome_unknown`).
 - `test_post_transmission_timeout_transitions_to_outcome_unknown_no_auto_restore`: PASSED (Socket timeout during request transmission transitions approval to `STATUS_OUTCOME_UNKNOWN` and blocks immediate retry).
 - `test_pre_transmission_failure_safely_restores_approved`: PASSED (Connection refused before handshake restores approval to `STATUS_APPROVED`).
@@ -82,6 +84,9 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
 - `test_reconcile_multiple_executions_correlates_only_exact`: PASSED (Multiple concurrent executions correlate ONLY the exact matching approval ID).
 - `test_reconcile_paginated_results_finds_execution_on_subsequent_page`: PASSED (Traverses cursor pagination and locates execution on page 2).
 - `test_reconcile_empty_first_page_with_additional_pages`: PASSED (Empty first page is not treated as proof of non-execution when nextCursor is present).
+- `test_reconcile_api_pagination_limit_reached_returns_outcome_unknown`: PASSED (Reaching max_pages with nextCursor present returns `outcome_unknown`, never guesses not_executed).
+- `test_reconcile_missing_workflow_id_returns_outcome_unknown`: PASSED (Missing workflowId returns `outcome_unknown`).
+- `test_reconcile_mismatched_workflow_id_ignored`: PASSED (Executions for wrong workflowId are not matched).
 - `test_reconcile_incomplete_api_response_returns_outcome_unknown`: PASSED (Malformed API response returns `outcome_unknown`).
 - `test_reconcile_api_unavailable_returns_outcome_unknown`: PASSED (Unreachable execution API returns `outcome_unknown`).
 - `test_duplicate_retry_prevention_while_ambiguous`: PASSED (Approval remains in `STATUS_OUTCOME_UNKNOWN` and blocks retry).
@@ -124,10 +129,10 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
 
 ## 3. Frontend Test Results
 
-**Framework:** Vitest v5.1.0  
-**Status:** **24 test files passed, 137 tests passed** in 4.13s  
+**Framework:** Vitest v5.0.3  
+**Status:** **24 test files passed, 148 tests passed** in 3.09s  
 - `message-text.test.ts` (20 tests passed)
-- `VoiceMode.test.tsx` (4 tests passed)
+- `VoiceMode.test.tsx` (15 tests passed)
 - `tts.test.ts` (18 tests passed)
 - `agent-schedule.test.ts` (11 tests passed)
 - `store.tool-call-repair.test.ts` (2 tests passed)
@@ -141,25 +146,42 @@ A comprehensive test verification pass was completed across the upgraded Jarvis 
 - `InferenceSourceSetup.test.tsx` (9 tests passed)
 - `store.models.test.ts` (3 tests passed)
 - `model-capabilities.test.ts` (7 tests passed)
-- All remaining 9 test suites passed.
+- `SettingsPage.cloud-providers.test.tsx` (1 test passed)
+- `markdown-math.test.tsx` (2 tests passed)
+- `OptInModal.test.tsx` (2 tests passed)
+- `SettingsPage.memory.test.tsx` (2 tests passed)
+- `SpeakMessageButton.test.tsx` (1 test passed)
+- `polyfills.test.ts` (3 tests passed)
+- `chat-telemetry.test.ts` (5 tests passed)
+- `tool-call.test.ts` (3 tests passed)
+- `DataSourcesPage.lifecycle.test.tsx` (2 tests passed)
 
 ---
 
 ## 4. Production Build Verification
 
 ```
+> cd frontend; npm run build
+> openjarvis-chat@1.0.1 build
 > tsc -b && vite build
+
 vite v8.3.4 building client environment for production...
 transforming...
 ✓ 3506 modules transformed.
 rendering chunks...
 computing gzip size...
-✓ built in 1.81s
-PWA v2.0.0 (workbox-9c191d2f.js, sw.js generated)
+✓ built in 2.04s
+
+PWA v2.0.0
+mode      generateSW
+precache  14 entries (2199.81 KiB)
+files generated
+  ../src/openjarvis/server/static/sw.js
+  ../src/openjarvis/server/static/workbox-9c191d2f.js
 ```
 
 ---
 
 ## 5. Verification Verdict
 
-All 104 security, workforce, models, and tools tests passed with 0 failures. The codebase demonstrates complete test reproducibility without ambient dependencies, robust container/sanitized execution boundaries, and race-free approval lifecycle management.
+All 129 backend tests (128 passed, 1 skipped on Windows symlink privileges) and 148 frontend tests (100% passed across 24 files) executed cleanly. Zero failures were recorded. The codebase demonstrates complete test reproducibility without ambient environment key dependencies, robust pre-shlex cross-platform path validation, fail-closed container isolation boundaries, race-free approval lifecycle management, and accurate pagination truncation handling.

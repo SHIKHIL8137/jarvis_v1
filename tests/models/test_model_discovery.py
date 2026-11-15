@@ -123,16 +123,25 @@ def test_discovery_invalid_api_key():
     )
 
     with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-invalid-key-12345"}):
-        with patch("urllib.request.urlopen", side_effect=http_401):
-            with patch.object(engine, "_probe_local_engines", return_value=[]):
-                models = engine.discover_all(force=True)
-                assert isinstance(models, list)
-                providers = engine.list_providers()
-                openai_prov = next((p for p in providers if p.get("provider") == "openai"), None)
-                assert openai_prov is not None
-                assert openai_prov.get("connected") is False
-                assert openai_prov.get("status") == "auth_error"
-                assert openai_prov.get("model_count") == 0
+        with patch("openjarvis.engine.cloud.CloudEngine") as mock_cloud_cls:
+            mock_inst = MagicMock()
+            mock_inst._openai_client = None
+            mock_inst._anthropic_client = None
+            mock_inst._google_client = None
+            mock_inst._deepseek_client = None
+            mock_inst._openrouter_client = None
+            mock_cloud_cls.return_value = mock_inst
+
+            with patch("urllib.request.urlopen", side_effect=http_401):
+                with patch.object(engine, "_probe_local_engines", return_value=[]):
+                    models = engine.discover_all(force=True)
+                    assert isinstance(models, list)
+                    providers = engine.list_providers()
+                    openai_prov = next((p for p in providers if p.get("provider") == "openai"), None)
+                    assert openai_prov is not None
+                    assert openai_prov.get("connected") is False
+                    assert openai_prov.get("status") == "auth_error"
+                    assert openai_prov.get("model_count") == 0
 
 
 def test_discovery_cloud_empty_model_list():
@@ -142,7 +151,7 @@ def test_discovery_cloud_empty_model_list():
     mock_client = MagicMock()
     mock_client.models.list.return_value = MagicMock(data=[])
 
-    with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-mock-key"}):
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-mock-key"}, clear=True):
         with patch("openjarvis.engine.cloud.CloudEngine") as mock_engine_cls:
             mock_inst = MagicMock()
             mock_inst._openai_client = mock_client
@@ -150,6 +159,8 @@ def test_discovery_cloud_empty_model_list():
             mock_inst._google_client = None
             mock_inst._deepseek_client = None
             mock_inst._openrouter_client = None
+            mock_inst._atlascloud_client = None
+            mock_inst._minimax_client = None
             mock_engine_cls.return_value = mock_inst
 
             models = engine._probe_cloud_engines()

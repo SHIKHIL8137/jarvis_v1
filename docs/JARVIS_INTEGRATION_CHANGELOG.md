@@ -1,5 +1,37 @@
 # Jarvis V1 Integration & Upgrade Changelog
 
+## Version 9: Final Defect Repair, Cross-Platform Path Normalization & Regression Pass
+**Date:** 2026-11-15  
+**Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  
+
+### Key Highlights:
+1. **P0 — FORGE Cross-Platform Raw Path Scanning & Multi-Pass Traversal Rejection (`src/openjarvis/sandbox/verification_runner.py`)**:
+   - **Pre-shlex Raw Scanning:** On POSIX systems, `shlex.split(..., posix=True)` strips backslashes, transforming `pytest C:\Windows\System32` into `pytest C:WindowsSystem32` and `pytest \\server\share` into `pytest \servershare`. Implemented `scan_raw_command_for_path_escapes()` to analyze the raw command string before tokenization, catching Windows absolute paths, drive roots, UNC paths (`\\` and `//`), and sensitive paths (`/etc/passwd`) cross-platform.
+   - **Multi-Pass URL Decoding:** Added `_multi_unquote()` supporting up to 5 decoding iterations to eliminate double/nested URL-encoded traversal escapes (`%252e%252e` -> `%2e%2e` -> `..`).
+   - **Relative Symlink Inspection:** Inspected bare relative filename arguments against `(resolved_cwd / token).is_symlink()` to detect symlinks pointing outside authorized directories even when no slash is present in the token.
+   - **Nonexistent Path Resolution:** Nonexistent relative path targets are resolved via `Path.resolve()` against the workspace root to ensure they do not target outside locations.
+   - **CWD Containment Priority:** Workspace containment validation of `cwd` executes strictly before any inline script check or container sandbox mounting.
+
+2. **P0 — n8n Pagination Truncation Safety & Workflow Identity Enforcement (`src/openjarvis/tools/n8n.py`)**:
+   - **Pagination Truncation:** When iterating through execution pages, if the safety limit (`max_pages`) is reached while `nextCursor` exists or the cursor stalls/repeats, reconciliation returns `status="outcome_unknown"` instead of mistakenly concluding `not_executed`.
+   - **Workflow Identity Check:** Reconciled executions must match the exact expected `workflowId`. Execution records with missing or mismatched workflow IDs are rejected.
+   - **Strict Correlation Metadata:** Executions must contain exact matching `approval_id` or `idempotency_key` metadata. Timestamp alone never proves an execution belongs to an approval. If correlation metadata is missing or empty, returns `outcome_unknown`.
+
+3. **P1 — Model Discovery Cloud REST Probes & Strict 401 Classification (`src/openjarvis/models/discovery.py`)**:
+   - **REST Fallback Probes:** Implemented fallback HTTP REST probes across all cloud providers (`openai`, `deepseek`, `openrouter`, `anthropic`, `google`, `atlascloud`, `minimax`) so discovery operates reliably even when SDK client instances are uninitialized.
+   - **Strict Auth Error Mapping:** HTTP 401, 403, and invalid API key errors strictly map to `status="auth_error"`, `connected=False`, and `model_count=0`.
+   - **Isolated Unit Tests:** Added `clear=True` on test environment variable patches to prevent ambient host keys (`ATLASCLOUD_API_KEY`) from triggering live network calls during unit test execution.
+
+4. **P1 — Multi-Agent Scenario A Deterministic Execution Fixture (`tests/workforce/test_scenarios_e2e.py`)**:
+   - Patched `ModelSelectionEngine.select_model` in `test_scenario_a_multi_file_coding_and_verification` with a deterministic mock `SelectionResult(model_id="mock-qwen-coder:latest", is_compatible=True, ...)` from `openjarvis.models.capabilities`.
+   - Scout, Forge, and Vanguard run deterministically to 100% completion in headless environments without local Ollama dependencies.
+
+5. **P2 — Voice Mode Speech Emoji Normalization Preservation (`frontend/src/components/Chat/VoiceMode.test.tsx`)**:
+   - Preserved all 15 component speech synthesis tests in `VoiceMode.test.tsx` verifying `SpeechSynthesisUtterance.text` zero-emoji delivery and DOM visual retention across all conditions.
+   - All 148 tests in 24 frontend test files passed; production Vite build passed with 0 errors.
+
+---
+
 ## Version 8: Final Defect Repair, Workspace Authorization & Independent Verification Pass
 **Date:** 2026-11-15  
 **Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  

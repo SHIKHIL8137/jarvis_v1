@@ -357,6 +357,8 @@ class ModelDiscoveryEngine:
                 t0 = time.monotonic()
                 prov_models: List[str] = []
                 try:
+                    api_key = env_key or getattr(client, "api_key", "")
+
                     if prov in ("openai", "deepseek", "openrouter") and hasattr(client, "models") and hasattr(client.models, "list"):
                         list_resp = client.models.list()
                         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
@@ -371,36 +373,48 @@ class ModelDiscoveryEngine:
                         for m in list_resp:
                             m_name = getattr(m, "name", str(m))
                             prov_models.append(m_name)
-                    elif prov == "anthropic":
-                        if client is not None and hasattr(client, "models") and hasattr(client.models, "list"):
-                            list_resp = client.models.list()
-                            elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
-                            data_items = getattr(list_resp, "data", [])
-                            for item in data_items:
-                                m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
-                                if m_id:
-                                    prov_models.append(m_id)
-                        else:
-                            api_key = env_key or getattr(client, "api_key", "")
-                            req = urllib.request.Request(
+                    elif prov == "anthropic" and client is not None and hasattr(client, "models") and hasattr(client.models, "list"):
+                        list_resp = client.models.list()
+                        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                        data_items = getattr(list_resp, "data", [])
+                        for item in data_items:
+                            m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
+                            if m_id:
+                                prov_models.append(m_id)
+                    else:
+                        # REST probe fallback for any provider when SDK client is not initialized or lacks models.list
+                        rest_endpoints = {
+                            "openai": ("https://api.openai.com/v1/models", {"Authorization": f"Bearer {api_key}"}),
+                            "deepseek": ("https://api.deepseek.com/models", {"Authorization": f"Bearer {api_key}"}),
+                            "openrouter": ("https://openrouter.ai/api/v1/models", {"Authorization": f"Bearer {api_key}"}),
+                            "anthropic": (
                                 "https://api.anthropic.com/v1/models",
-                                headers={
-                                    "x-api-key": api_key,
-                                    "anthropic-version": "2023-06-01",
-                                    "User-Agent": "OpenJarvis",
-                                },
-                                method="GET",
-                            )
+                                {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                            ),
+                            "google": (f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", {}),
+                            "atlascloud": ("https://api.atlascloud.ai/v1/models", {"Authorization": f"Bearer {api_key}"}),
+                            "minimax": ("https://api.minimax.chat/v1/models", {"Authorization": f"Bearer {api_key}"}),
+                        }
+
+                        if prov in rest_endpoints and api_key:
+                            url, headers = rest_endpoints[prov]
+                            headers["User-Agent"] = "OpenJarvis"
+                            req = urllib.request.Request(url, headers=headers, method="GET")
                             with urllib.request.urlopen(req, timeout=3.0) as resp:
                                 elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                                 data = json.loads(resp.read().decode("utf-8"))
-                                for item in data.get("data", []):
-                                    m_id = item.get("id")
-                                    if m_id:
-                                        prov_models.append(m_id)
-                    else:
-                        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
-                        prov_models = []
+                                items = data.get("data") or data.get("models") or []
+                                if isinstance(items, list):
+                                    for item in items:
+                                        m_id = (
+                                            getattr(item, "id", None)
+                                            or (item.get("id") or item.get("name") if isinstance(item, dict) else str(item))
+                                        )
+                                        if m_id:
+                                            prov_models.append(m_id)
+                        else:
+                            elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                            prov_models = []
 
                     if prov_models:
                         self._provider_health[prov] = {
@@ -433,17 +447,25 @@ class ModelDiscoveryEngine:
                     elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                     err_str = str(exc).lower()
                     code = getattr(exc, "status_code", getattr(exc, "code", getattr(exc, "http_status", None)))
-                    connected = False
-                    if (
+                    if code is None and hasattr(exc, "response"):
+                        resp_obj = getattr(exc, "response")
+                        code = getattr(resp_obj, "status_code", getattr(resp_obj, "code", None))
+
+                    is_auth = (
                         code in (401, 403)
                         or "auth" in err_str
                         or "401" in err_str
                         or "403" in err_str
                         or "unauthorized" in err_str
                         or "invalid api key" in err_str
+                        or "incorrect api key" in err_str
+                        or "invalid_api_key" in err_str
                         or "forbidden" in err_str
                         or "permission denied" in err_str
-                    ):
+                        or "authentication" in err_str
+                    )
+
+                    if is_auth:
                         status = "auth_error"
                         connected = False
                     elif code == 429 or "429" in err_str or "rate limit" in err_str or "quota" in err_str:

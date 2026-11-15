@@ -327,3 +327,51 @@ def test_nonexistent_path_resolving_outside_workspace_blocked(tmp_path):
         assert res_nonexistent["status"] == VerificationOutcome.BLOCKED.value
         assert "resolves outside authorized workspace" in res_nonexistent["output"]
 
+
+def test_windows_paths_simulated_on_posix_blocked(tmp_path):
+    """Simulating execution on POSIX/Linux where backslashes could be consumed by shlex."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    with patch("sys.platform", "linux"):
+        with patch("openjarvis.sandbox.verification_runner.load_config") as mock_cfg:
+            mock_cfg.return_value.security.allowed_dirs = [str(ws)]
+
+            # 1. Windows drive root escape simulated on POSIX
+            res_drive = runner.execute_verification_command("pytest C:\\", cwd=str(ws))
+            assert res_drive["passed"] is False
+            assert res_drive["status"] == VerificationOutcome.BLOCKED.value
+            assert "drive-root escape prohibited" in res_drive["output"]
+
+            # 2. Windows UNC path simulated on POSIX
+            res_unc = runner.execute_verification_command(r"pytest \\server\share\evil.py", cwd=str(ws))
+            assert res_unc["passed"] is False
+            assert res_unc["status"] == VerificationOutcome.BLOCKED.value
+            assert "UNC paths prohibited" in res_unc["output"]
+
+            # 3. Windows absolute path with backslashes on POSIX
+            res_win_abs = runner.execute_verification_command(r"pytest C:\Windows\System32\evil.py", cwd=str(ws))
+            assert res_win_abs["passed"] is False
+            assert res_win_abs["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace" in res_win_abs["output"]
+
+            # 4. Traversal with backslashes on POSIX
+            res_trav = runner.execute_verification_command(r"pytest tests\..\..\secret.py", cwd=str(ws))
+            assert res_trav["passed"] is False
+            assert res_trav["status"] == VerificationOutcome.BLOCKED.value
+            assert "path traversal prohibited" in res_trav["output"]
+
+
+def test_repeated_url_encoded_traversal_blocked(tmp_path):
+    """Repeatedly URL-encoded traversal (%252e%252e) must be decoded and blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    res = runner.execute_verification_command("pytest %252e%252e/%252e%252e/etc/passwd", cwd=str(ws))
+    assert res["passed"] is False
+    assert res["status"] == VerificationOutcome.BLOCKED.value
+    assert "path traversal prohibited" in res["output"]
+
+
