@@ -316,6 +316,42 @@ class VoiceSessionManager:
             if self.state in (VoiceState.SPEAKING, VoiceState.INTERRUPTED):
                 self._set_state(VoiceState.IDLE)
 
+    def answer_workforce_status_query(self, text: str) -> Optional[str]:
+        """Check if user text is inquiring about agent workforce status and return answer if so."""
+        try:
+            from openjarvis.workforce.registry import AgentWorkforceRegistry
+
+            reg = AgentWorkforceRegistry.get_instance()
+            return reg.answer_status_query(text)
+        except Exception as exc:
+            logger.debug("Workforce status query check failed: %s", exc)
+            return None
+
+    def announce_startup(
+        self,
+        tts_backend: Any = None,
+        quiet_hours_check: bool = True,
+        timezone_name: str = "Asia/Kolkata",
+    ) -> bool:
+        """Speak the workforce status announcement on system boot, respecting quiet hours."""
+        try:
+            if quiet_hours_check:
+                from openjarvis.routines.quiet_hours import QuietHoursManager
+
+                qh = QuietHoursManager(timezone_name=timezone_name)
+                if qh.is_in_quiet_hours():
+                    logger.info("Startup voice announcement suppressed: quiet hours active in %s", timezone_name)
+                    return False
+
+            from openjarvis.workforce.registry import AgentWorkforceRegistry
+
+            reg = AgentWorkforceRegistry.get_instance()
+            announcement = reg.generate_startup_announcement()
+            return self.speak(announcement, tts_backend=tts_backend)
+        except Exception as exc:
+            logger.debug("Startup announcement failed: %s", exc)
+            return False
+
 
 _GLOBAL_VOICE_SESSION_MANAGER: Optional[VoiceSessionManager] = None
 

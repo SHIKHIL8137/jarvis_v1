@@ -83,6 +83,21 @@ async def approve_action(action_id: str, remember: bool = False) -> Dict[str, An
             raise HTTPException(status_code=400, detail=str(exc))
     store.update_status(action_id, STATUS_APPROVED)
     logger.info("Action %s approved via UI (granted=%s)", action_id, granted or "-")
+
+    # If this action is tied to a background task waiting approval, resume task execution
+    if action.permission_key and action.permission_key.startswith("task:"):
+        parts = action.permission_key.split(":")
+        if len(parts) >= 2:
+            task_id = parts[1]
+            try:
+                from openjarvis.tasks.engine import get_task_engine
+
+                engine = get_task_engine()
+                engine.resume_task(task_id)
+                logger.info("Resumed background task %s following approval of %s", task_id, action_id)
+            except Exception as resume_err:
+                logger.debug("Failed to auto-resume task %s: %s", task_id, resume_err)
+
     return {"status": "approved", "id": action_id, "granted": granted}
 
 

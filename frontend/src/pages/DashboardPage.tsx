@@ -5,6 +5,7 @@ import { CostComparison } from '../components/Dashboard/CostComparison';
 import { TraceDebugger } from '../components/Dashboard/TraceDebugger';
 import { TaskCenter } from '../components/Desktop/TaskCenter';
 import { RoutineManager } from '../components/Desktop/RoutineManager';
+import { AgentWorkforce } from '../components/Desktop/AgentWorkforce';
 import { fetchSystemCapabilities, type SystemCapabilities } from '../lib/api';
 
 export function DashboardPage() {
@@ -94,6 +95,9 @@ export function DashboardPage() {
             </div>
           </div>
         )}
+
+        {/* Multi-Agent Specialist Workforce */}
+        <AgentWorkforce />
 
         {/* Autonomous Background Tasks */}
         <TaskCenter />

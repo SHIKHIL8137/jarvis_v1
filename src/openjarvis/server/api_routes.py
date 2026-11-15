@@ -1499,10 +1499,12 @@ def include_all_routes(app) -> None:
     from openjarvis.server.routine_routes import routine_router
     from openjarvis.server.security_routes import router as security_router
     from openjarvis.server.tasks_router import tasks_router
+    from openjarvis.server.workforce_routes import router as workforce_router
 
     app.include_router(approval_router)
     app.include_router(security_router)
     app.include_router(tasks_router)
+    app.include_router(workforce_router)
     app.include_router(routine_router)
     app.include_router(agents_router)
     app.include_router(memory_router)
@@ -1570,4 +1572,5 @@ __all__ = [
     "speech_router",
     "feedback_router",
     "optimize_router",
+    "workforce_router",
 ]

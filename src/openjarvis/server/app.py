@@ -318,6 +318,62 @@ def create_app(
     # AuthMiddleware never sees WS upgrade requests). Empty = auth disabled.
     app.state.api_key = api_key
 
+    @app.on_event("startup")
+    async def _startup_services() -> None:
+        """Initialize background engines, task recovery, and agent workforce."""
+        # 1. Background Task Engine
+        try:
+            from openjarvis.tasks.engine import get_task_engine
+            task_engine = getattr(app.state, "task_engine", None)
+            if task_engine is None:
+                task_engine = get_task_engine(bus=app.state.bus)
+                app.state.task_engine = task_engine
+            recovered = task_engine.recover_on_startup()
+            if recovered > 0:
+                logger.info("TaskEngine recovered %d interrupted tasks on startup", recovered)
+        except Exception as exc:
+            logger.warning("Failed to initialize or recover TaskEngine: %s", exc)
+
+        # 2. Routine Engine
+        try:
+            from openjarvis.routines.engine import get_routine_engine
+            routine_engine = getattr(app.state, "routine_engine", None)
+            if routine_engine is None:
+                routine_engine = get_routine_engine(bus=app.state.bus)
+                app.state.routine_engine = routine_engine
+            routine_engine.start()
+            logger.info("RoutineEngine started on server boot")
+        except Exception as exc:
+            logger.warning("Failed to start RoutineEngine: %s", exc)
+
+        # 3. Agent Workforce Registry
+        try:
+            from openjarvis.workforce.registry import AgentWorkforceRegistry
+            workforce_reg = AgentWorkforceRegistry.get_instance()
+            app.state.workforce_registry = workforce_reg
+            workforce_reg.initialize_workforce(engine=app.state.engine)
+            workforce_reg.start_heartbeat_monitor()
+            logger.info("AgentWorkforceRegistry initialized with specialist workforce")
+        except Exception as exc:
+            logger.warning("Failed to initialize AgentWorkforceRegistry: %s", exc)
+
+    @app.on_event("shutdown")
+    async def _shutdown_workforce_and_routines() -> None:
+        """Cleanly stop workforce heartbeat monitoring and routine scheduler."""
+        workforce_reg = getattr(app.state, "workforce_registry", None)
+        if workforce_reg is not None:
+            try:
+                workforce_reg.stop_heartbeat_monitor()
+            except Exception:
+                pass
+
+        routine_engine = getattr(app.state, "routine_engine", None)
+        if routine_engine is not None:
+            try:
+                routine_engine.stop()
+            except Exception:
+                pass
+
     @app.on_event("shutdown")
     async def _shutdown_managed_runtime() -> None:
         # Quiesce every producer before touching the shared MCP pool. Route

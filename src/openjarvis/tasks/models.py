@@ -27,6 +27,7 @@ class TaskStatus(str, Enum):
 class StepStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -48,6 +49,10 @@ class TaskStep:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     error: Optional[str] = None
+    assigned_agent: str = "atlas"
+    dependencies: List[str] = field(default_factory=list)
+    expected_output: str = ""
+    verification_criteria: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -74,6 +79,10 @@ class TaskStep:
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+            assigned_agent=data.get("assigned_agent", "atlas"),
+            dependencies=data.get("dependencies") or [],
+            expected_output=data.get("expected_output", ""),
+            verification_criteria=data.get("verification_criteria", ""),
         )
 
 

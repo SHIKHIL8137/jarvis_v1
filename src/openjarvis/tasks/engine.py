@@ -80,6 +80,19 @@ CAPABILITY_PROFILES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Sensitive actions that strictly require fresh explicit human approval via ApprovalStore
+SENSITIVE_TOOLS: set[str] = {
+    "file_write",
+    "shell_exec",
+    "desktop",
+    "channel_send",
+    "send_email",
+    "sms_send",
+    "execute_system_command",
+    "file_delete",
+    "delete_file",
+}
+
 
 class BackgroundTaskEngine:
     """Manages autonomous, long-running persistent tasks with safe crash recovery,
@@ -168,10 +181,10 @@ class BackgroundTaskEngine:
             return False
 
     def resume_task(self, task_id: str) -> bool:
-        """Resume execution of a paused task."""
+        """Resume execution of a paused or approval-waiting task."""
         with self._lock:
             task = self.store.get_task(task_id)
-            if not task or task.status != TaskStatus.PAUSED:
+            if not task or task.status not in (TaskStatus.PAUSED, TaskStatus.WAITING_APPROVAL):
                 return False
 
             if task_id in self._pause_flags:
@@ -298,11 +311,71 @@ class BackgroundTaskEngine:
                 self.store.log_event(task_id, "step_started", {"step_number": step.step_number, "title": step.title})
                 self._publish_event("step_started", {"task_id": task_id, "step_number": step.step_number})
 
-                # Profile isolation check
-                if not self._is_tool_permitted(task.agent_profile, step.tool_name):
+                # 1. Profile and workforce specialist isolation check
+                permitted, deny_reason = self._is_tool_permitted(
+                    task.agent_profile,
+                    step.tool_name,
+                    agent_id=step.assigned_agent,
+                )
+                if not permitted:
                     step.status = StepStatus.FAILED
-                    step.error = f"Tool '{step.tool_name}' denied by capability profile '{task.agent_profile}'"
-                    self.store.update_status(task_id, TaskStatus.FAILED, error=step.error)
+                    step.error = deny_reason
+                    self.store.update_status(task_id, TaskStatus.FAILED, error=deny_reason)
+                    if step.assigned_agent:
+                        try:
+                            from openjarvis.workforce.registry import AgentWorkforceRegistry
+                            from openjarvis.workforce.models import AgentRuntimeState
+                            AgentWorkforceRegistry.get_instance().set_agent_state(
+                                step.assigned_agent,
+                                AgentRuntimeState.FAILED,
+                                error=deny_reason,
+                            )
+                        except Exception:
+                            pass
+                    return
+
+                # 2. Sensitive action explicit approval gate
+                is_approved, approval_id = self._check_step_approval(task, step)
+                if not is_approved:
+                    step.status = StepStatus.WAITING_APPROVAL
+                    task.status = TaskStatus.WAITING_APPROVAL
+                    self.store.save_task(task)
+                    self.store.log_event(
+                        task_id,
+                        "step_waiting_approval",
+                        {
+                            "step_number": step.step_number,
+                            "tool": step.tool_name,
+                            "approval_id": approval_id,
+                            "assigned_agent": step.assigned_agent,
+                        },
+                    )
+                    self._publish_event(
+                        "task_waiting_approval",
+                        {
+                            "task_id": task_id,
+                            "step_number": step.step_number,
+                            "approval_id": approval_id,
+                            "assigned_agent": step.assigned_agent,
+                        },
+                    )
+                    if step.assigned_agent:
+                        try:
+                            from openjarvis.workforce.registry import AgentWorkforceRegistry
+                            from openjarvis.workforce.models import AgentRuntimeState
+                            AgentWorkforceRegistry.get_instance().set_agent_state(
+                                step.assigned_agent,
+                                AgentRuntimeState.WAITING_APPROVAL,
+                                current_task_id=task_id,
+                            )
+                        except Exception:
+                            pass
+                    logger.info(
+                        "Task %s step %d waiting for explicit human approval (action_id=%s)",
+                        task_id,
+                        step.step_number,
+                        approval_id,
+                    )
                     return
 
                 # Execute step tool call
@@ -361,41 +434,108 @@ class BackgroundTaskEngine:
                 self._cancel_flags.pop(task_id, None)
 
     def _generate_plan(self, task: BackgroundTask) -> List[TaskStep]:
-        """Generate structured execution plan for the task."""
-        # Standard structured steps
-        steps = [
-            TaskStep(
-                step_id=f"{task.id}-step-1",
-                step_number=1,
-                title="Investigate and gather context",
-                description=f"Inspect query and gather data for: {task.user_request}",
-                tool_name="knowledge_search",
-                tool_params={"query": task.user_request},
-                idempotency_key=f"{task.id}:step:1:knowledge_search",
-            ),
-            TaskStep(
-                step_id=f"{task.id}-step-2",
-                step_number=2,
-                title="Synthesize and compile findings",
-                description="Process evidence and structure recommendations",
-                tool_name="think",
-                tool_params={"thought": f"Synthesizing results for {task.title}"},
-                idempotency_key=f"{task.id}:step:2:think",
-            ),
-        ]
-        return steps
+        """Generate dynamic multi-agent execution plan for the task using AtlasOrchestrator."""
+        try:
+            from openjarvis.workforce.orchestrator import AtlasOrchestrator
 
-    def _is_tool_permitted(self, profile: str, tool_name: str) -> bool:
-        """Enforce agent capability isolation."""
+            orchestrator = AtlasOrchestrator(bus=self.bus)
+            return orchestrator.plan_task(task.user_request)
+        except Exception as exc:
+            logger.warning("AtlasOrchestrator planning encountered error: %s, using fallback", exc)
+            return [
+                TaskStep(
+                    step_id=f"{task.id}-step-1",
+                    step_number=1,
+                    title="Investigate and gather context",
+                    description=f"Inspect query and gather data for: {task.user_request}",
+                    tool_name="knowledge_search",
+                    tool_params={"query": task.user_request},
+                    idempotency_key=f"{task.id}:step:1:knowledge_search",
+                    assigned_agent="scout",
+                ),
+                TaskStep(
+                    step_id=f"{task.id}-step-2",
+                    step_number=2,
+                    title="Synthesize and compile findings",
+                    description="Process evidence and structure recommendations",
+                    tool_name="think",
+                    tool_params={"thought": f"Synthesizing results for {task.title}"},
+                    idempotency_key=f"{task.id}:step:2:think",
+                    assigned_agent="atlas",
+                ),
+            ]
+
+    def _is_tool_permitted(
+        self,
+        profile: str,
+        tool_name: str,
+        agent_id: Optional[str] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """Enforce agent capability isolation and specialist permissions."""
         if not tool_name:
-            return True
-        prof = CAPABILITY_PROFILES.get(profile, CAPABILITY_PROFILES["general"])
+            return True, None
+
+        # Check workforce specialist manifest if agent assigned
+        if agent_id:
+            try:
+                from openjarvis.workforce.registry import AgentWorkforceRegistry
+
+                reg = AgentWorkforceRegistry.get_instance()
+                manifest = reg.get_agent_manifest(agent_id)
+                if manifest:
+                    if tool_name in manifest.denied_tools:
+                        return False, f"Agent '{agent_id}' is explicitly denied from using tool '{tool_name}'"
+                    if manifest.allowed_tools and tool_name not in manifest.allowed_tools:
+                        return False, f"Tool '{tool_name}' not in allowed tools for agent '{agent_id}'"
+            except Exception as exc:
+                logger.debug("Workforce manifest lookup skipped: %s", exc)
+
+        prof = CAPABILITY_PROFILES.get(profile, CAPABILITY_PROFILES.get("general", {}))
         if tool_name in prof.get("denied_tools", set()):
-            return False
+            return False, f"Tool '{tool_name}' denied by capability profile '{profile}'"
         allowed = prof.get("allowed_tools", set())
         if allowed and tool_name not in allowed:
-            return False
-        return True
+            return False, f"Tool '{tool_name}' not in allowed tools for capability profile '{profile}'"
+        return True, None
+
+    def _check_step_approval(self, task: BackgroundTask, step: TaskStep) -> tuple[bool, Optional[str]]:
+        """Enforce fresh, explicit human approval for sensitive actions."""
+        if not step.tool_name or step.tool_name not in SENSITIVE_TOOLS:
+            return True, None
+
+        from openjarvis.tools.approval_store import (
+            ApprovalStore,
+            STATUS_APPROVED,
+            TIER_HIGH,
+        )
+
+        approval_store = getattr(self, "_approval_store", None)
+        if approval_store is None:
+            approval_store = ApprovalStore()
+            self._approval_store = approval_store
+
+        perm_key = f"task:{task.id}:step:{step.step_number}:{step.tool_name}"
+        existing = approval_store.get_action_by_permission_key(perm_key)
+
+        if existing and existing.status == STATUS_APPROVED:
+            return True, existing.id
+
+        if existing:
+            return False, existing.id
+
+        # Queue fresh pending approval request
+        desc = (
+            f"Task '{task.title}' (Step {step.step_number} by {step.assigned_agent or 'system'}): "
+            f"Execute sensitive action '{step.tool_name}' with parameters {step.tool_params}"
+        )
+        action = approval_store.queue_action(
+            action_type=step.tool_name,
+            description=desc,
+            payload=step.tool_params,
+            permission_key=perm_key,
+            tier=TIER_HIGH,
+        )
+        return False, action.id
 
     def _execute_step(
         self,

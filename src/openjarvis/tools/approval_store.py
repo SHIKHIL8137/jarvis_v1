@@ -240,6 +240,15 @@ class ApprovalStore:
         ).fetchone()
         return PendingAction.from_row(row) if row else None
 
+    def get_action_by_permission_key(self, permission_key: str) -> Optional[PendingAction]:
+        row = self._conn.execute(
+            "SELECT id, action_type, description, payload, permission_key, "
+            "tier, status, created_at, expires_at, notification_sent, decision_at "
+            "FROM pending_actions WHERE permission_key = ? ORDER BY created_at DESC LIMIT 1",
+            (permission_key,),
+        ).fetchone()
+        return PendingAction.from_row(row) if row else None
+
     def list_pending(self) -> List[PendingAction]:
         """Return all non-expired pending actions."""
         now = datetime.now(timezone.utc).isoformat()

@@ -1458,3 +1458,148 @@ export async function pinMemoryFact(factId: string, pinned: boolean): Promise<bo
   });
   return res.ok;
 }
+
+// ---------------------------------------------------------------------------
+// Agent Workforce & Autonomous Orchestration API
+// ---------------------------------------------------------------------------
+
+export type WorkforceAgent = {
+  id: string;
+  display_name: string;
+  role: string;
+  description: string;
+  avatar: string;
+  enabled: boolean;
+  status:
+    | 'registered'
+    | 'initializing'
+    | 'online'
+    | 'idle'
+    | 'busy'
+    | 'waiting_approval'
+    | 'paused'
+    | 'degraded'
+    | 'offline'
+    | 'failed'
+    | 'stopping';
+  active_model: string;
+  current_task_id?: string | null;
+  runtime_health: 'healthy' | 'degraded' | 'offline' | 'failed';
+  last_heartbeat?: number | null;
+  last_error?: string | null;
+  allowed_tools: string[];
+  denied_tools: string[];
+  version: string;
+};
+
+export type TeamSummary = {
+  total_registered: number;
+  total_online: number;
+  total_idle: number;
+  total_busy: number;
+  total_waiting_approval: number;
+  total_degraded: number;
+  total_offline: number;
+  total_failed: number;
+  active_tasks: number;
+};
+
+export type WorkforceReport = {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  title: string;
+  summary: string;
+  status: string;
+  key_findings: string[];
+  actions_taken: string[];
+  recommendations: string[];
+  confidence_score: number;
+  created_at: number;
+};
+
+export type TaskTimeline = {
+  task_id: string;
+  messages: Array<{
+    id: string;
+    from_agent: string;
+    to_agent: string;
+    message_type: string;
+    content: string;
+    timestamp: number;
+  }>;
+  reports: WorkforceReport[];
+};
+
+export async function fetchWorkforceAgents(): Promise<WorkforceAgent[]> {
+  const res = await apiFetch('/v1/workforce/agents');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.agents ?? [];
+}
+
+export async function fetchWorkforceAgent(agentId: string): Promise<any | null> {
+  const res = await apiFetch(`/v1/workforce/agents/${agentId}`);
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export async function enableWorkforceAgent(agentId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/workforce/agents/${agentId}/enable`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function disableWorkforceAgent(agentId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/workforce/agents/${agentId}/disable`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function fetchTeamSummary(): Promise<TeamSummary | null> {
+  const res = await apiFetch('/v1/workforce/summary');
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export async function queryWorkforceStatus(query: string): Promise<string> {
+  const res = await apiFetch('/v1/workforce/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) return 'Unable to query agent team status.';
+  const data = await res.json();
+  return data.answer ?? '';
+}
+
+export async function delegateTeamTask(goal: string, priority: string = 'normal'): Promise<any> {
+  const res = await apiFetch('/v1/workforce/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ goal, priority }),
+  });
+  if (!res.ok) throw new Error(`Task delegation failed (${res.status})`);
+  return await res.json();
+}
+
+export async function fetchTaskTimeline(taskId: string): Promise<TaskTimeline | null> {
+  const res = await apiFetch(`/v1/workforce/tasks/${taskId}/timeline`);
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export async function fetchWorkforceReports(taskId?: string, agentId?: string): Promise<WorkforceReport[]> {
+  const params = new URLSearchParams();
+  if (taskId) params.set('task_id', taskId);
+  if (agentId) params.set('agent_id', agentId);
+  const res = await apiFetch(`/v1/workforce/reports?${params.toString()}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.reports ?? [];
+}
+
+export async function fetchStartupAnnouncement(): Promise<string> {
+  const res = await apiFetch('/v1/workforce/announcement');
+  if (!res.ok) return '';
+  const data = await res.json();
+  return data.announcement ?? '';
+}
