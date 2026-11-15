@@ -26,6 +26,9 @@ from openjarvis.workforce.store import WorkforceStore
 
 @pytest.fixture
 def e2e_context(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from openjarvis.models.capabilities import SelectionResult
+
     bus = EventBus()
     store = WorkforceStore(db_path=tmp_path / "e2e_workforce.db")
     registry = AgentWorkforceRegistry(store=store, bus=bus)
@@ -35,14 +38,34 @@ def e2e_context(tmp_path):
     conflict_resolver = ConflictResolver()
     orchestrator = AtlasOrchestrator(registry=registry, bus=bus)
 
-    return {
-        "store": store,
-        "registry": registry,
-        "orchestrator": orchestrator,
-        "message_bus": message_bus,
-        "conflict_resolver": conflict_resolver,
-        "bus": bus,
-    }
+    # Provide deterministic mock model selection for workforce tests
+    mock_engine = MagicMock()
+    mock_engine.select_model.return_value = SelectionResult(
+        model_id="mock-e2e-model",
+        provider="mock",
+        task_type="general",
+        reason="Deterministic test model fixture",
+        policy="balanced",
+        is_local=True,
+        context_length=8192,
+        score=1.0,
+        candidate_scores={"mock-e2e-model": 1.0},
+        is_compatible=True,
+    )
+    patcher = patch("openjarvis.models.get_model_selection_engine", return_value=mock_engine)
+    patcher.start()
+
+    try:
+        yield {
+            "store": store,
+            "registry": registry,
+            "orchestrator": orchestrator,
+            "message_bus": message_bus,
+            "conflict_resolver": conflict_resolver,
+            "bus": bus,
+        }
+    finally:
+        patcher.stop()
 
 
 def test_erp_analysis_multi_agent_e2e(e2e_context):

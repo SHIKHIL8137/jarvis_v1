@@ -89,7 +89,7 @@ def test_forge_real_verification_execution(tmp_path):
         tool_params={
             "objective": "Verify python execution",
             "workdir": str(tmp_path),
-            "verification_cmd": 'python -c "import sys; sys.exit(0)"',
+            "verification_cmd": "python --version",
         },
         assigned_agent="forge",
     )
@@ -103,6 +103,42 @@ def test_forge_real_verification_execution(tmp_path):
             assert result.get("agent_id") == "forge"
             assert result.get("results", {}).get("verification_status") == "passed"
             assert result.get("results", {}).get("verified") is True
+
+
+def test_forge_blocks_arbitrary_inline_code_without_container(tmp_path):
+    """Untrusted inline code execution (python -c, node -e) is blocked when container sandbox is unavailable."""
+    store = WorkforceStore(db_path=tmp_path / "forge_inline_block.db")
+    reg = AgentWorkforceRegistry(store=store)
+    reg.initialize_workforce()
+    orchestrator = AtlasOrchestrator(registry=reg)
+
+    step = TaskStep(
+        step_id="step-forge-block",
+        step_number=1,
+        title="Untrusted inline script",
+        description="Run arbitrary script",
+        tool_name="forge_coding",
+        tool_params={
+            "objective": "Attempt inline execution",
+            "workdir": str(tmp_path),
+            "verification_cmd": 'python -c "import os; print(os.environ)"',
+        },
+        assigned_agent="forge",
+    )
+
+    with patch("openjarvis.agents.opencode.is_opencode_available", return_value=False):
+        with patch("openjarvis.coding.goal.run_goal") as mock_goal:
+            mock_goal.return_value = MagicMock(status="completed", rounds=1, reason="Done", todos=[])
+            # Ensure container sandbox is reported unavailable
+            with patch("openjarvis.sandbox.verification_runner.IsolatedVerificationRunner.is_container_runtime_available", return_value=False):
+                result, err = orchestrator.execute_step_safely(step, model="test-model")
+                assert result is not None
+                assert result.get("results", {}).get("verification_status") == "blocked"
+                assert result.get("results", {}).get("verified") is False
+                tests = result.get("tests_executed", [])
+                assert len(tests) >= 1
+                assert tests[0]["status"] == "blocked"
+                assert "Security policy violation" in tests[0]["output"]
 
 
 def test_model_selection_failure_fails_step_without_auto_fallback(tmp_path):

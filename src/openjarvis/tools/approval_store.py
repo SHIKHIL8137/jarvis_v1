@@ -37,6 +37,7 @@ STATUS_EXECUTED = "executed"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
 STATUS_DENIED = "denied"
+STATUS_OUTCOME_UNKNOWN = "outcome_unknown"
 
 # Tiers govern default ask behavior
 TIER_TRIVIAL = "trivial"  # Execute immediately, no ask
@@ -301,6 +302,11 @@ class ApprovalStore:
                 return False, action, f"Approval ID '{action_id}' is currently executing in another concurrent request."
             if action.status == STATUS_EXECUTED:
                 return False, action, f"Approval ID '{action_id}' has already been consumed (single-use constraint)."
+            if action.status == STATUS_OUTCOME_UNKNOWN:
+                return False, action, (
+                    f"Approval ID '{action_id}' has status 'outcome_unknown' (request may have been delivered to remote service). "
+                    "Reconciliation is required before any retry to prevent duplicate operations."
+                )
             if action.status == STATUS_DENIED:
                 return False, action, f"Approval ID '{action_id}' was denied."
             if action.status == STATUS_EXPIRED:
@@ -371,13 +377,20 @@ class ApprovalStore:
         success: bool,
         error: Optional[str] = None,
         pre_execution_failure: bool = False,
+        outcome_unknown: bool = False,
     ) -> None:
-        """Complete approval execution. If failure occurred before execution started,
-        restore state to 'approved' so approval is not permanently lost."""
+        """Complete approval execution.
+        - If success: transitions to 'executed'
+        - If outcome_unknown: transitions to 'outcome_unknown' (NEVER restored to approved without reconciliation!)
+        - If pre_execution_failure: restored to 'approved' (definitively never reached remote service)
+        - Otherwise: transitions to 'failed'
+        """
         with self._lock:
             now_iso = datetime.now(timezone.utc).isoformat()
             if success:
                 new_status = STATUS_EXECUTED
+            elif outcome_unknown:
+                new_status = STATUS_OUTCOME_UNKNOWN
             elif pre_execution_failure:
                 new_status = STATUS_APPROVED  # Do not permanently consume if failed before execution!
             else:
@@ -388,6 +401,37 @@ class ApprovalStore:
                 (new_status, now_iso, action_id),
             )
             self._conn.commit()
+
+    def reconcile_approval(
+        self,
+        action_id: str,
+        resolved_status: str,
+        notes: str = "",
+    ) -> Tuple[bool, str]:
+        """Reconcile an approval in STATUS_OUTCOME_UNKNOWN to STATUS_EXECUTED, STATUS_FAILED, or STATUS_APPROVED."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, status FROM pending_actions WHERE id = ?",
+                (action_id,),
+            ).fetchone()
+            if not row:
+                return False, f"Approval ID '{action_id}' not found."
+            current_status = row[1]
+            if current_status != STATUS_OUTCOME_UNKNOWN:
+                return False, (
+                    f"Cannot reconcile approval with status '{current_status}'. "
+                    f"Only '{STATUS_OUTCOME_UNKNOWN}' approvals require reconciliation."
+                )
+            if resolved_status not in (STATUS_EXECUTED, STATUS_FAILED, STATUS_APPROVED):
+                return False, f"Invalid resolved status '{resolved_status}'. Must be executed, failed, or approved."
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                "UPDATE pending_actions SET status = ?, decision_at = ? WHERE id = ? AND status = ?",
+                (resolved_status, now_iso, action_id, STATUS_OUTCOME_UNKNOWN),
+            )
+            self._conn.commit()
+            return True, f"Approval '{action_id}' successfully reconciled to '{resolved_status}'."
 
     def update_status(
         self,

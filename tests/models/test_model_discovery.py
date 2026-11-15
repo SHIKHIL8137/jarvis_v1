@@ -1,12 +1,20 @@
-"""Tests for dynamic model discovery across local and cloud providers."""
+"""Tests for dynamic model discovery across local and cloud providers.
+
+Deterministic unit tests:
+- Uses mocked provider responses and does not require live local engines or real API keys.
+- Tests configured but unreachable providers, invalid API keys, empty model lists, and rate limits.
+- Keeps live provider integration tests strictly separated.
+"""
 
 from __future__ import annotations
 
+import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openjarvis.models.capabilities import ModelCapabilityInfo
+from openjarvis.models.capabilities import CapabilityProvenance, ModelCapabilityInfo
 from openjarvis.models.discovery import ModelDiscoveryEngine
 
 
@@ -44,12 +52,141 @@ def test_estimate_vram_mb():
     assert vram_70b > 40000  # Far exceeds 4 GB VRAM limit
 
 
-def test_discover_all_returns_models():
+def test_discover_all_returns_models_mocked_deterministic():
+    """Deterministic model discovery without relying on developer's local Ollama or API keys."""
     engine = ModelDiscoveryEngine()
-    models = engine.discover_all()
-    assert isinstance(models, list)
-    assert len(models) > 0
-    # Provider health should be populated
-    providers = engine.list_providers()
-    assert isinstance(providers, list)
-    assert len(providers) > 0
+
+    mock_ollama_resp = json.dumps({
+        "models": [
+            {
+                "name": "qwen2.5-coder:7b",
+                "details": {"parameter_size": "7B", "quantization_level": "Q4_K_M", "context_length": 32768},
+                "capabilities": ["tools", "coding"],
+            },
+            {
+                "name": "llama3.2:3b",
+                "details": {"parameter_size": "3B", "quantization_level": "Q4_0", "context_length": 8192},
+                "capabilities": ["streaming"],
+            },
+        ]
+    }).encode("utf-8")
+
+    mock_http_resp = MagicMock()
+    mock_http_resp.read.return_value = mock_ollama_resp
+    mock_http_resp.__enter__.return_value = mock_http_resp
+    mock_http_resp.__exit__.return_value = None
+
+    with patch("urllib.request.urlopen", return_value=mock_http_resp):
+        with patch.object(engine, "_probe_cloud_engines", return_value=[]):
+            models = engine.discover_all(force=True)
+
+            assert isinstance(models, list)
+            assert len(models) == 2
+            model_ids = [m.model_id for m in models]
+            assert "qwen2.5-coder:7b" in model_ids
+            assert "llama3.2:3b" in model_ids
+
+            providers = engine.list_providers()
+            assert any(p.get("provider") == "ollama" and p.get("status") == "healthy" for p in providers)
+
+
+def test_discovery_configured_but_unreachable_provider():
+    """Configured provider whose host is offline must be cleanly recorded as offline without raising."""
+    engine = ModelDiscoveryEngine()
+
+    # Simulate connection refused
+    refused_err = urllib.error.URLError(ConnectionRefusedError(10061, "Connect call failed"))
+
+    with patch("urllib.request.urlopen", side_effect=refused_err):
+        with patch.object(engine, "_probe_cloud_engines", return_value=[]):
+            models = engine.discover_all(force=True)
+
+            assert isinstance(models, list)
+            providers = engine.list_providers()
+            ollama_prov = next((p for p in providers if p.get("provider") == "ollama"), None)
+            assert ollama_prov is not None
+            assert ollama_prov.get("status") == "offline"
+            assert ollama_prov.get("model_count") == 0
+
+
+def test_discovery_invalid_api_key():
+    """Invalid API key returning HTTP 401 must record error and not crash."""
+    engine = ModelDiscoveryEngine()
+
+    http_401 = urllib.error.HTTPError(
+        url="https://api.openai.com/v1/models",
+        code=401,
+        msg="Unauthorized",
+        hdrs=MagicMock(),
+        fp=MagicMock(read=lambda: b'{"error": {"message": "Incorrect API key provided"}}'),
+    )
+
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-invalid-key-12345"}):
+        with patch("urllib.request.urlopen", side_effect=http_401):
+            with patch.object(engine, "_probe_local_engines", return_value=[]):
+                models = engine.discover_all(force=True)
+                assert isinstance(models, list)
+                providers = engine.list_providers()
+                openai_prov = next((p for p in providers if p.get("provider") == "openai"), None)
+                if openai_prov:
+                    assert openai_prov.get("connected") is False or openai_prov.get("status") in ("offline", "unauthorized")
+                    assert openai_prov.get("model_count") == 0
+
+
+def test_discovery_empty_model_list():
+    """Provider returning empty list must be recorded as healthy with 0 models."""
+    engine = ModelDiscoveryEngine()
+
+    mock_empty_resp = json.dumps({"models": []}).encode("utf-8")
+    mock_http_resp = MagicMock()
+    mock_http_resp.read.return_value = mock_empty_resp
+    mock_http_resp.__enter__.return_value = mock_http_resp
+    mock_http_resp.__exit__.return_value = None
+
+    with patch("urllib.request.urlopen", return_value=mock_http_resp):
+        with patch.object(engine, "_probe_cloud_engines", return_value=[]):
+            models = engine.discover_all(force=True)
+            assert isinstance(models, list)
+            assert len(models) == 0
+
+            providers = engine.list_providers()
+            ollama_prov = next((p for p in providers if p.get("provider") == "ollama"), None)
+            assert ollama_prov is not None
+            assert ollama_prov.get("status") == "healthy"
+            assert ollama_prov.get("model_count") == 0
+
+
+def test_discovery_rate_limited():
+    """Provider returning HTTP 429 Too Many Requests must not raise uncaught error."""
+    engine = ModelDiscoveryEngine()
+
+    http_429 = urllib.error.HTTPError(
+        url="https://api.anthropic.com/v1/models",
+        code=429,
+        msg="Too Many Requests",
+        hdrs=MagicMock(),
+        fp=MagicMock(read=lambda: b'{"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}'),
+    )
+
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-test"}):
+        with patch("urllib.request.urlopen", side_effect=http_429):
+            with patch.object(engine, "_probe_local_engines", return_value=[]):
+                models = engine.discover_all(force=True)
+                assert isinstance(models, list)
+
+
+def test_discovery_zero_credentials_unconfigured():
+    """Environment with zero configured credentials returns clean unconfigured providers and empty catalog."""
+    engine = ModelDiscoveryEngine()
+
+    with patch.dict("os.environ", {}, clear=True):
+        with patch.object(engine, "_probe_local_engines", return_value=[]):
+            models = engine.discover_all(force=True)
+            assert isinstance(models, list)
+            assert len(models) == 0
+
+            providers = engine.list_providers()
+            for p in providers:
+                if p.get("type") == "cloud":
+                    assert p.get("status") == "unconfigured"
+                    assert p.get("connected") is False

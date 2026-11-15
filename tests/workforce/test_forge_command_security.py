@@ -63,7 +63,12 @@ def test_dangerous_shell_characters_blocked(tmp_path):
         res = engine._run_command(cmd, cwd=str(tmp_path))
         assert not res["passed"]
         assert res["status"] == "blocked"
-        assert ("dangerous shell character" in res["output"] or "destructive shell command" in res["output"])
+        assert (
+            "dangerous shell character" in res["output"]
+            or "destructive shell command" in res["output"]
+            or "Security policy violation" in res["output"]
+            or "Security boundary violation" in res["output"]
+        )
 
 
 def test_directory_traversal_in_command_blocked(tmp_path):
@@ -88,16 +93,16 @@ def test_real_subprocess_execution_without_shell(tmp_path):
     engine = ForgeCodingEngine()
 
     # Successful command
-    res_ok = engine._run_command('python -c "import sys; sys.exit(0)"', cwd=str(tmp_path))
+    res_ok = engine._run_command("python --version", cwd=str(tmp_path))
     assert res_ok["passed"] is True
     assert res_ok["status"] == "passed"
     assert res_ok["exit_code"] == 0
 
-    # Failing command
-    res_fail = engine._run_command('python -c "import sys; sys.exit(42)"', cwd=str(tmp_path))
+    # Failing command (non-zero exit code)
+    res_fail = engine._run_command("pytest non_existent_file_xyz_12345.py", cwd=str(tmp_path))
     assert res_fail["passed"] is False
     assert res_fail["status"] == "failed"
-    assert res_fail["exit_code"] == 42
+    assert res_fail["exit_code"] != 0
 
 
 def test_unauthorized_workdir_blocked(tmp_path):

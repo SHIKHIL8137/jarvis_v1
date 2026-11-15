@@ -1,5 +1,33 @@
 # Jarvis V1 Integration & Upgrade Changelog
 
+## Version: Final Security Hardening, Process Isolation & Test Reproducibility Pass
+**Date:** 2026-11-15  
+**Architect:** Principal AI Systems & Security Architect  
+
+### Key Highlights:
+1. **FORGE Isolated Verification Runner (`src/openjarvis/sandbox/verification_runner.py`)**:
+   - Explicitly documented that executable allowlists do NOT provide OS-level process isolation.
+   - Built `IsolatedVerificationRunner` supporting Docker/Podman disposable container sandboxing with `--network none`, restricted mounts, CPU/memory limits (`1024m`, `2.0` CPUs, `100` pids), and workspace-only write access.
+   - Untrusted inline code execution (`python -c`, `python -m`, `node -e`, `node --eval`) fails closed with `status="blocked"` when container sandbox is unavailable.
+   - All host environment secrets (`OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*`, `DEEPSEEK_*`, `ATLASCLOUD_*`, `N8N_*`, `GITHUB_*`, `AWS_*`, `JWT_*`, `DATABASE_URL`) are completely scrubbed from subprocess environments.
+   - Strictly enforces workspace root containment and blocks directory traversal (`..`) and symlink escapes.
+   - Differentiates `passed`, `failed`, `blocked`, and `inconclusive` statuses accurately.
+
+2. **n8n Ambiguous Outcomes & Idempotency (`src/openjarvis/tools/n8n.py`, `src/openjarvis/tools/approval_store.py`)**:
+   - Added explicit `STATUS_OUTCOME_UNKNOWN = "outcome_unknown"` state to `ApprovalStore`.
+   - Post-transmission socket/network timeouts transition to `outcome_unknown` and are **never** automatically restored to `approved`, preventing duplicate executions (e.g. charging twice, duplicate webhooks).
+   - Pre-transmission failures (DNS resolution errors, connection refused before handshake) are classified via `classify_network_failure` and safely restored to `approved`.
+   - Implemented reconciliation engine (`N8nClient.reconcile_workflow_execution()` and `N8nTool` action `"reconcile"`) to verify actual execution status with n8n before retry or state transition.
+   - Bound unique idempotency keys via `X-Idempotency-Key` headers and `_idempotency_key` payload fields.
+   - Guaranteed atomic single-use claims under concurrent thread races.
+
+3. **Deterministic Model Discovery & Multi-Agent Tests**:
+   - Fixed `tests/models/test_model_discovery.py` to use deterministic mocked provider responses without ambient dependencies on developer's local Ollama or cloud keys.
+   - Added unit tests for unreachable providers, HTTP 401 auth errors, empty catalogs, and HTTP 429 rate limits.
+   - Added deterministic model selection fixtures to `tests/workforce/test_workforce_e2e.py` and `tests/workforce/test_atlas_orchestrator.py`, eliminating test stalls in headless unconfigured environments.
+
+---
+
 ## Version: Advanced Model Intelligence & Autonomous Workforce Integration
 **Date:** 2026-11-15  
 **Architect:** Principal AI Systems & Orchestration Architect  

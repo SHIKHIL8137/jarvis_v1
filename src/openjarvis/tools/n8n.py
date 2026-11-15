@@ -26,6 +26,7 @@ from openjarvis.tools.approval_store import (
     STATUS_DENIED,
     STATUS_EXECUTED,
     STATUS_EXPIRED,
+    STATUS_OUTCOME_UNKNOWN,
     STATUS_PENDING,
     TIER_HIGH,
 )
@@ -62,6 +63,44 @@ def _canonical_payload_hash(payload: Any) -> str:
     except Exception:
         canon = str(payload)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+
+def classify_network_failure(exc: Exception) -> str:
+    """Classify exception into:
+    - 'pre_transmission': Definitively failed before request bytes were transmitted (DNS error, connection refused, SSL handshake).
+    - 'outcome_unknown': Ambiguous failure where delivery may have occurred (timeout, connection reset while reading, HTTP 502/504).
+    - 'post_transmission_error': Server returned an explicit error response (HTTP 4xx/5xx).
+    """
+    import socket
+    import ssl
+
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (502, 504):
+            return "outcome_unknown"
+        return "post_transmission_error"
+
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, socket.gaierror):
+            return "pre_transmission"
+        if isinstance(reason, ConnectionRefusedError):
+            return "pre_transmission"
+        if isinstance(reason, ssl.SSLError):
+            return "pre_transmission"
+        reason_str = str(reason).lower()
+        if any(term in reason_str for term in ("connection refused", "name or service not known", "getaddrinfo failed", "nodename nor servname provided")):
+            return "pre_transmission"
+        if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in reason_str or "timeout" in reason_str:
+            return "outcome_unknown"
+        if isinstance(reason, (ConnectionResetError, BrokenPipeError)) or "connection reset" in reason_str:
+            return "outcome_unknown"
+
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "outcome_unknown"
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+        return "outcome_unknown"
+
+    return "outcome_unknown"  # Fail safe: when in doubt, treat as outcome_unknown
 
 
 DEFAULT_SESSION_COOKIE_TTL_SECONDS = 6 * 24 * 3600
@@ -203,6 +242,7 @@ class N8nClient:
         data: Optional[Dict[str, Any]] = None,
         timeout: float = 6.0,
         retry_auth: bool = True,
+        headers_extra: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Perform sanitized HTTP request against n8n with API key or session cookie."""
         clean_ep = _sanitize_path(endpoint)
@@ -212,6 +252,8 @@ class N8nClient:
             "Accept": "application/json",
             "User-Agent": DEFAULT_USER_AGENT,
         }
+        if headers_extra:
+            headers.update(headers_extra)
 
         # API key if configured
         if self.api_key:
@@ -234,7 +276,7 @@ class N8nClient:
                 with self._auth_lock:
                     self._session_cookie = None
                     self._session_cookie_expires_at = 0.0
-                return self._make_request(endpoint, method=method, data=data, timeout=timeout, retry_auth=False)
+                return self._make_request(endpoint, method=method, data=data, timeout=timeout, retry_auth=False, headers_extra=headers_extra)
             raw_err = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
             raise RuntimeError(f"n8n HTTP {exc.code}: {raw_err or exc.reason}")
 
@@ -314,27 +356,91 @@ class N8nClient:
             res = self._make_request(alt_endpoint)
             return res.get("data", res)
 
-    def execute_workflow(self, workflow_id: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Run workflow execution."""
+    def execute_workflow(
+        self,
+        workflow_id: str,
+        data: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run workflow execution with optional idempotency key binding."""
         clean_id = _sanitize_path(workflow_id).lstrip("/")
         endpoint = f"/rest/workflows/{clean_id}/run" if not self.api_key else f"/api/v1/workflows/{clean_id}/run"
-        payload = {"data": data or {}}
+        payload_data = dict(data or {})
+        if idempotency_key:
+            payload_data["_idempotency_key"] = idempotency_key
+        payload = {"data": payload_data}
+        headers_extra = {"X-Idempotency-Key": idempotency_key} if idempotency_key else None
+
         try:
-            return self._make_request(endpoint, method="POST", data=payload)
+            return self._make_request(endpoint, method="POST", data=payload, headers_extra=headers_extra)
         except Exception:
             alt_endpoint = f"/api/v1/workflows/{clean_id}/run" if "rest" in endpoint else f"/rest/workflows/{clean_id}/run"
-            return self._make_request(alt_endpoint, method="POST", data=payload)
+            return self._make_request(alt_endpoint, method="POST", data=payload, headers_extra=headers_extra)
 
-    def trigger_webhook(self, path: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Trigger an n8n webhook slug or endpoint."""
+    def trigger_webhook(
+        self,
+        path: str,
+        data: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Trigger an n8n webhook slug or endpoint with optional idempotency key."""
         clean_path = _sanitize_path(path)
         url = f"{self.base_url}{clean_path}"
-        headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT}
-        body = json.dumps(data or {}).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": DEFAULT_USER_AGENT,
+        }
+        if idempotency_key:
+            headers["X-Idempotency-Key"] = idempotency_key
+
+        payload_data = dict(data or {})
+        if idempotency_key:
+            payload_data["_idempotency_key"] = idempotency_key
+
+        body = json.dumps(payload_data).encode("utf-8")
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10.0) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {"status": "ok"}
+
+    def reconcile_workflow_execution(
+        self,
+        workflow_id: str,
+        started_after: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Query n8n execution list to determine if a workflow executed or is currently executing."""
+        clean_id = _sanitize_path(workflow_id).lstrip("/")
+        endpoint = f"/rest/executions?workflowId={clean_id}" if not self.api_key else f"/api/v1/executions?workflowId={clean_id}"
+        try:
+            res = self._make_request(endpoint)
+        except Exception:
+            alt_endpoint = f"/api/v1/executions?workflowId={clean_id}" if "rest" in endpoint else f"/rest/executions?workflowId={clean_id}"
+            try:
+                res = self._make_request(alt_endpoint)
+            except Exception as exc:
+                return {"reconciled": False, "found": False, "error": str(exc)}
+
+        data = res.get("data", [])
+        if not data and isinstance(res, list):
+            data = res
+
+        if not data:
+            return {"reconciled": True, "found": False, "status": "not_executed"}
+
+        # Most recent execution for this workflow
+        latest = data[0]
+        exec_id = str(latest.get("id", ""))
+        exec_status = str(latest.get("status", "unknown"))
+        finished = bool(latest.get("finished", False))
+
+        return {
+            "reconciled": True,
+            "found": True,
+            "execution_id": exec_id,
+            "status": exec_status,
+            "finished": finished,
+        }
 
 
 _CLIENT_INSTANCE: Optional[N8nClient] = None
@@ -379,7 +485,7 @@ class N8nTool(BaseTool):
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["health", "list_workflows", "get_workflow", "execute_workflow", "trigger_webhook"],
+                        "enum": ["health", "list_workflows", "get_workflow", "execute_workflow", "trigger_webhook", "reconcile"],
                         "description": "Operation to perform against n8n.",
                     },
                     "workflow_id": {
@@ -478,7 +584,7 @@ class N8nTool(BaseTool):
 
                 # Atomically claimed in STATUS_EXECUTING
                 try:
-                    res = self.client.execute_workflow(clean_id, data=payload)
+                    res = self.client.execute_workflow(clean_id, data=payload, idempotency_key=action_obj.id)
                     self._approval_store.complete_approval_execution(action_obj.id, success=True)
                     return ToolResult(
                         tool_name="n8n",
@@ -486,13 +592,19 @@ class N8nTool(BaseTool):
                         success=True,
                     )
                 except Exception as exec_err:
-                    is_pre_exec = (
-                        isinstance(exec_err, (urllib.error.URLError, ConnectionError, TimeoutError, OSError))
-                        and not isinstance(exec_err, urllib.error.HTTPError)
-                    )
-                    self._approval_store.complete_approval_execution(
-                        action_obj.id, success=False, error=str(exec_err), pre_execution_failure=is_pre_exec
-                    )
+                    failure_cat = classify_network_failure(exec_err)
+                    if failure_cat == "pre_transmission":
+                        self._approval_store.complete_approval_execution(
+                            action_obj.id, success=False, error=str(exec_err), pre_execution_failure=True
+                        )
+                    elif failure_cat == "outcome_unknown":
+                        self._approval_store.complete_approval_execution(
+                            action_obj.id, success=False, error=str(exec_err), outcome_unknown=True
+                        )
+                    else:
+                        self._approval_store.complete_approval_execution(
+                            action_obj.id, success=False, error=str(exec_err), pre_execution_failure=False
+                        )
                     raise
 
             elif action == "trigger_webhook":
@@ -536,7 +648,7 @@ class N8nTool(BaseTool):
 
                 # Atomically claimed in STATUS_EXECUTING
                 try:
-                    res = self.client.trigger_webhook(clean_path, data=payload)
+                    res = self.client.trigger_webhook(clean_path, data=payload, idempotency_key=action_obj.id)
                     self._approval_store.complete_approval_execution(action_obj.id, success=True)
                     return ToolResult(
                         tool_name="n8n",
@@ -544,14 +656,62 @@ class N8nTool(BaseTool):
                         success=True,
                     )
                 except Exception as exec_err:
-                    is_pre_exec = (
-                        isinstance(exec_err, (urllib.error.URLError, ConnectionError, TimeoutError, OSError))
-                        and not isinstance(exec_err, urllib.error.HTTPError)
-                    )
-                    self._approval_store.complete_approval_execution(
-                        action_obj.id, success=False, error=str(exec_err), pre_execution_failure=is_pre_exec
-                    )
+                    failure_cat = classify_network_failure(exec_err)
+                    if failure_cat == "pre_transmission":
+                        self._approval_store.complete_approval_execution(
+                            action_obj.id, success=False, error=str(exec_err), pre_execution_failure=True
+                        )
+                    elif failure_cat == "outcome_unknown":
+                        self._approval_store.complete_approval_execution(
+                            action_obj.id, success=False, error=str(exec_err), outcome_unknown=True
+                        )
+                    else:
+                        self._approval_store.complete_approval_execution(
+                            action_obj.id, success=False, error=str(exec_err), pre_execution_failure=False
+                        )
                     raise
+
+            elif action == "reconcile":
+                if not approval_id:
+                    return ToolResult(tool_name="n8n", content="approval_id is required for reconcile", success=False)
+                act = self._approval_store.get_action(approval_id)
+                if not act:
+                    return ToolResult(tool_name="n8n", content=f"Approval ID '{approval_id}' not found", success=False)
+                if act.status != STATUS_OUTCOME_UNKNOWN:
+                    return ToolResult(
+                        tool_name="n8n",
+                        content=f"Approval ID '{approval_id}' has status '{act.status}'. Only '{STATUS_OUTCOME_UNKNOWN}' requires reconciliation.",
+                        success=False,
+                    )
+
+                target_wf = workflow_id or (act.payload.get("workflow_id") if isinstance(act.payload, dict) else "")
+                if not target_wf and act.permission_key.startswith("n8n:workflow:"):
+                    parts = act.permission_key.split(":")
+                    if len(parts) >= 3:
+                        target_wf = parts[2]
+
+                if target_wf:
+                    rec_res = self.client.reconcile_workflow_execution(target_wf)
+                    if rec_res.get("found"):
+                        st_name = str(rec_res.get("status", "")).lower()
+                        new_st = STATUS_EXECUTED if st_name in ("success", "running", "waiting") else STATUS_FAILED
+                    elif rec_res.get("reconciled") and not rec_res.get("found"):
+                        new_st = STATUS_APPROVED  # Confirmed never started; safe to retry
+                    else:
+                        return ToolResult(
+                            tool_name="n8n",
+                            content=f"Reconciliation query failed: {rec_res.get('error', 'Unknown error')}",
+                            success=False,
+                        )
+                else:
+                    new_st = STATUS_FAILED
+
+                ok, msg = self._approval_store.reconcile_approval(approval_id, new_st)
+                return ToolResult(
+                    tool_name="n8n",
+                    content=f"Reconciliation for approval '{approval_id}': {msg}",
+                    success=ok,
+                )
 
             else:
                 return ToolResult(tool_name="n8n", content=f"Unknown n8n action: '{action}'", success=False)

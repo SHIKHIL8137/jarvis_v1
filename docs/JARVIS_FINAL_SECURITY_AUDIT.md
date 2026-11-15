@@ -1,87 +1,140 @@
-# Jarvis V1 — Final Independent Reliability and Security Audit
+# Jarvis V1 — Final Security Hardening, Process Isolation and Test Reproducibility Audit
 
 **Date:** 2026-11-15  
 **Auditor:** Principal AI Systems & Security Architect  
 **Target Repository:** Jarvis V1 (`oprn-jarvis`)  
-**Scope:** Source-level verification and remediation of FORGE command execution, n8n approval concurrency, model capability policies, cloud provider discovery, and multi-agent DAG execution.
+**Scope:** Source-level verification and hardening of FORGE arbitrary code execution containment, isolated verification runner, host secret elimination, n8n ambiguous outcome reconciliation, deterministic model discovery, and multi-agent test reproducibility.
 
 ---
 
 ## 1. Executive Summary
 
-An independent, rigorous source-level audit of the Jarvis V1 repository was conducted. Previous assumptions and reports were verified directly against code implementations and test suites.
+An independent, rigorous source-level security audit and remediation pass was conducted across the Jarvis V1 codebase. All findings from previous audits were critically re-evaluated and hardened against executable source code:
 
-All identified vulnerabilities, concurrency races, and hardcoded fallbacks have been resolved:
-1. **FORGE Command Security:** Completely eliminated `shell=True` on all platforms. Verification commands are parsed into token vectors, validated against an explicit executable allowlist (`pytest`, `python`, `npm`, `vitest`, `git`, etc.), checked for dangerous shell chaining/redirection characters, and strictly contained within configured workspace roots with symlink resolution.
-2. **n8n Approval Concurrency:** Replaced racy check-then-act logic with atomic SQLite conditional updates (`UPDATE pending_actions SET status = 'executing' ... WHERE id = ? AND status = 'approved'`). Introduced 7 explicit states (`pending`, `approved`, `executing`, `executed`, `failed`, `expired`, `denied`). Guaranteed single-use semantics and pre-execution failure restoration to prevent approval loss during transient network disconnects.
-3. **Model Capability Verification:** Enforced strict separation across `confirmed`, `provider_declared`, `inferred`, and `unknown` capability provenances. Removed the assumption that every cloud model supports tools; explicitly flagged models like `deepseek-reasoner` (R1) as non-tool models. Implemented configurable `CapabilityConfidencePolicy` (`CONFIRMED_ONLY`, `DECLARED_OR_CONFIRMED`, `ALLOW_INFERRED`).
-4. **Cloud Model Discovery:** Implemented the Anthropic live model discovery path (`GET https://api.anthropic.com/v1/models` / SDK fallback). Distinctly separated provider connectivity (`connected: bool`) from model availability (`model_count`). Handled authentication errors (401), rate limits (429), and unsupported endpoints without fabricating provider metadata.
-5. **Multi-Agent Execution Integrity:** Solved ToolRegistry clearing during test cycles and cold imports via `ensure_tools_registered()`, ensuring all 70 built-in tools (`file_read`, `file_write`, `knowledge_search`, `n8n`, etc.) are consistently available. Completely removed silent `"auto"` model fallbacks in planning and execution; failures now transition steps to explicit `FAILED` state.
+1. **FORGE Arbitrary Code Execution Hardening (`src/openjarvis/sandbox/verification_runner.py` & `src/openjarvis/workforce/forge_coding.py`):**
+   - **Process Isolation Principle:** Recognized and documented that an executable allowlist alone **does NOT provide process isolation**. Pytest plugins, npm test scripts, conftest.py files, build scripts, and inline code can execute arbitrary instructions with host permissions.
+   - **Isolated Verification Runner:** Implemented `IsolatedVerificationRunner`. When a container runtime (Docker or Podman) is available, verification runs inside an ephemeral, disposable container with `--network none`, restricted read-only system mounts, read-write access strictly confined to `/workspace`, and CPU (`2.0`), memory (`1024m`), and process-count (`100`) limits.
+   - **Fail-Closed Untrusted Commands:** When a container sandbox is unavailable, all untrusted inline code executions (`python -c`, `python -m`, `node -e`, `node --eval`) **fail closed** with `status="blocked"` and an explicit error explanation.
+   - **Zero Host Secrets Leaked:** When running standard test suites on the host, the environment is scrubbed clean: all API keys (`OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*`, `DEEPSEEK_*`, `ATLASCLOUD_*`, `N8N_*`), tokens (`GITHUB_*`, `JWT_*`), passwords, database URLs, and AWS credentials are stripped from `os.environ` before spawning child processes.
+   - **Symlink Escape & Path Traversal Rejection:** Both working directories and command path arguments are inspected; symlinks resolving outside authorized workspace roots are rejected with `VerificationStatus.BLOCKED`.
+   - **Accurate Status Discrimination:** Cleanly distinguishes `passed` (exit 0), `failed` (test assertion failure), `blocked` (security policy rejection), `not_run` (no tests), and `inconclusive` (timeout or crash).
 
----
+2. **n8n Ambiguous Execution Outcomes (`src/openjarvis/tools/n8n.py` & `src/openjarvis/tools/approval_store.py`):**
+   - **Explicit `outcome_unknown` State:** Added `STATUS_OUTCOME_UNKNOWN = "outcome_unknown"` to `ApprovalStore`.
+   - **No Automatic Approval Restoration on Network Timeout:** Socket read timeouts or connection resets occurring during or after request payload transmission transition to `STATUS_OUTCOME_UNKNOWN`. The approval is **NEVER** restored to `approved`, preventing dangerous duplicate executions (e.g. charging customers twice or firing duplicate automated workflows).
+   - **Failure Boundary Classification (`classify_network_failure`):** Distinguishes failures known to occur before request bytes were transmitted (DNS lookup failure, connection refused before handshake) from ambiguous post-transmission errors (socket timeout, read timeout, HTTP 502/504). Pre-transmission failures safely revert to `approved`; ambiguous errors transition to `outcome_unknown`.
+   - **Reconciliation Engine:** Implemented `N8nClient.reconcile_workflow_execution()` and `N8nTool` action `"reconcile"`. Queries the n8n execution API to inspect actual execution state before allowing retry or resolution. If confirmed completed, transitions to `STATUS_EXECUTED`; if confirmed never started, transitions to `STATUS_APPROVED`; if failed, transitions to `STATUS_FAILED`.
+   - **Idempotency Keys:** Requests now bind unique idempotency keys (using `approval_id` or canonical payload hashes) passed via `X-Idempotency-Key` HTTP headers and payload bodies.
 
-## 2. In-Depth Technical Verification
+3. **Deterministic Model Discovery & Test Reliability (`tests/models/test_model_discovery.py`):**
+   - Eliminated all silent dependencies on the developer's local Ollama instance or real cloud API keys.
+   - Replaced ambient unit tests with deterministic mocked responses.
+   - Added explicit test cases for configured but unreachable providers (ConnectionRefused -> `status="offline"`, `connected=False`, `model_count=0`), invalid API keys (HTTP 401 Unauthorized), empty model catalogs (`{"models": []}` -> healthy with 0 models), and rate limits (HTTP 429).
 
-### 2.1 FORGE Command Execution & Containment (`src/openjarvis/workforce/forge_coding.py`)
-- **Zero `shell=True` Execution:** Verification commands are parsed into `tokens` via `shlex.split(clean_cmd, posix=(sys.platform != "win32"))` with outer quote stripping. `subprocess.run([resolved_exec, *tokens[1:]], shell=False, ...)` is strictly used across Windows, macOS, and Linux.
-- **Explicit Executable Allowlist:** Commands must stem from `ALLOWED_VERIFICATION_EXECUTABLES` (`pytest`, `python`, `python3`, `py`, `npm`, `npx`, `node`, `git`, `uv`, `ruff`, `flake8`, `mypy`, `black`, `isort`, `vitest`, `jest`, `cargo`, `go`, `pnpm`, `yarn`). Disallowed binaries (`bash`, `powershell`, `cmd`, `curl`, `wget`, `whoami`) are rejected with `status="blocked"`.
-- **Dangerous Metacharacter Validation:** Rejects shell chaining and redirection operators (`;`, `&&`, `||`, `|`, `>`, `>>`, `<`, `<<`, `&`, `` ` ``, `$()`, `$`).
-- **Workspace Boundary Containment:** Validates `target_workdir` and command path arguments against `is_path_within_allowed(path, allowed_dirs)`. Path traversal (`..`, `/..`, `\..`, `/etc/`, `\Windows\`) and symlink escapes outside permitted workspace roots return `VerificationStatus.BLOCKED`.
-
-### 2.2 n8n Approval Concurrency (`src/openjarvis/tools/approval_store.py` & `n8n.py`)
-- **Atomic Test-and-Set:** Claims execute via:
-  ```sql
-  UPDATE pending_actions 
-  SET status = 'executing', decision_at = ? 
-  WHERE id = ? AND status = 'approved'
-  ```
-  If `cur.rowcount == 0`, concurrent claims fail immediately. Verified under 10-thread simultaneous competition: exactly 1 claim succeeds and 9 fail.
-- **7-State Lifecycle:** Actions transition through `STATUS_PENDING`, `STATUS_APPROVED`, `STATUS_EXECUTING`, `STATUS_EXECUTED`, `STATUS_FAILED`, `STATUS_EXPIRED`, `STATUS_DENIED`.
-- **Pre-Execution Failure Restoration:** When a network disconnect or client error occurs before the HTTP request reaches n8n (`isinstance(err, (URLError, ConnectionError, TimeoutError, OSError)) and not HTTPError`), `complete_approval_execution` resets the status back to `STATUS_APPROVED`. Approvals are never permanently lost due to transient transport errors.
-- **Cryptographic Binding:** Each approval is bound to `f"n8n:{action_type}:{target}:{canonical_payload_hash}"`. Altering workflow IDs, webhook paths, or payload fields invalidates the approval.
-
-### 2.3 Model Capability Verification (`src/openjarvis/models/capabilities.py`)
-- **Capability Provenance:** Attributes every capability to `CONFIRMED`, `PROVIDER_DECLARED`, `INFERRED`, or `UNKNOWN`.
-- **Non-Tool Cloud Models:** Explicitly denies tool-calling support on models known not to support function calling (e.g., `deepseek-reasoner` / `deepseek-r1`, `o1-preview`, `o1-mini`, `gpt-3.5-turbo-instruct`, `claude-2.0`). Unknown cloud models default to `supports_tools=False` and `provenance["tools"]="unknown"`.
-- **Configurable Confidence Policy:**
-  - `CONFIRMED_ONLY`: Rejects declared and inferred capabilities; requires live benchmark verification.
-  - `DECLARED_OR_CONFIRMED`: Accepts declared or confirmed capabilities; rejects inferred heuristics.
-  - `ALLOW_INFERRED`: Accepts inferred capabilities but strictly rejects unknown.
-  - Unknown capabilities (`prov == "unknown"`) are rejected under all policies.
-
-### 2.4 Cloud Model Discovery (`src/openjarvis/models/discovery.py`)
-- **Anthropic Discovery Path:** Live discovery path probes `GET https://api.anthropic.com/v1/models` using `x-api-key` and `anthropic-version: 2023-06-01` or `client.models.list()`.
-- **Separate Connectivity Reporting:** Health record returns `connected: bool` separate from `model_count: int` and `status: str`.
-  - HTTP 401: `status="auth_error"`, `connected=False`
-  - HTTP 429: `status="rate_limited"`, `connected=True`
-  - HTTP 404/405: `status="unsupported_endpoint"`, `connected=True`
-  - Network timeout: `status="unreachable"`, `connected=False`
-- **Zero Fabrication:** Never reports models as healthy merely because client libraries are installed; empty or failing responses return 0 models.
-
-### 2.5 Multi-Agent Execution Integrity (`src/openjarvis/workforce/orchestrator.py`)
-- **Tool Registration Resilience:** Implemented `ensure_tools_registered()`. When test harnesses clear registries between runs, tools are dynamically reloaded, ensuring all 70 built-in tools remain available.
-- **Elimination of Silent Fallbacks:** Removed `step_model = "auto"` fallbacks. When dynamic model selection fails to allocate a compatible model, the step transitions to `StepStatus.FAILED` with a descriptive error.
-- **Runtime Model Propagation:** Dynamically selected model IDs are saved to agent heartbeats and passed into `step_executor(step, model=step_model)` and `engine.execute_coding_task(..., model=allocated_model)`.
+4. **Multi-Agent Test Determinism (`tests/workforce/`):**
+   - Investigated and resolved why Atlas and workforce E2E tests became incomplete when no local LLMs were running: `AtlasOrchestrator` now supports deterministic model selection fixtures during tests.
+   - Tests run reliably in headless, unconfigured CI environments with zero ambient credentials.
 
 ---
 
-## 3. Regression Test Coverage
+## 2. Technical Implementation Details
 
-| Test Module | Coverage Focus | Test Count | Status |
+### 2.1 FORGE Isolated Verification Runner Architecture
+```
++-------------------------------------------------------------------------+
+|                       ForgeCodingEngine._run_command                    |
++-------------------------------------------------------------------------+
+                                    |
+                                    v
++-------------------------------------------------------------------------+
+|                  IsolatedVerificationRunner.execute                     |
+|  1. Tokenize command safely (shlex.split, no shell=True)                |
+|  2. Enforce ALLOWED_VERIFICATION_EXECUTABLES allowlist                  |
+|  3. Reject shell chaining metacharacters (; && || | > < $ `)            |
+|  4. Validate workspace containment & reject symlink traversal escapes    |
+|  5. Detect inline code / arbitrary modules (python -c, -m, node -e)     |
++-------------------------------------------------------------------------+
+                    |                                   |
+         [Inline Code / Untrusted]             [Standard Test Runner]
+                    |                                   |
+          Container Available?                 Container Available?
+         /                   \                /                   \
+       YES                    NO            YES                    NO
+        |                      |             |                      |
+        v                      v             v                      v
+[Docker/Podman Sandbox] [FAIL CLOSED]  [Docker Sandbox]    [Sanitized Host Run]
+ - --network none        status=blocked - --network none    - Zero host secrets
+ - --memory 1024m                       - --memory 1024m    - shell=False
+ - --cpus 2.0                           - --cpus 2.0        - Timeout limits
+ - --pids-limit 100                     - -v ws:/workspace  - Accurate exit code
+ - -v ws:/workspace:rw
+```
+
+### 2.2 n8n Approval Concurrency & Ambiguity Lifecycle
+```
+                       [ STATUS_PENDING ]
+                               |
+                      Human Approves / Denies
+                               |
+                     [ STATUS_APPROVED ]
+                               |
+                    Atomic Test-and-Set Claim
+                               |
+                    [ STATUS_EXECUTING ]
+                               |
+                +--------------+---------------+
+                |                              |
+        Transmission Attempt          Server HTTP Response
+                |                              |
+      +---------+---------+            +-------+-------+
+      |                   |            |               |
+Pre-Transmission     Ambiguous     200 OK           4xx / 5xx
+ (DNS / Refused)     (Timeout)         |               |
+      |                   |            v               v
+      v                   v      [ EXECUTED ]      [ FAILED ]
+[ APPROVED ]     [ OUTCOME_UNKNOWN ]
+(Safe to retry)          |
+                   Reconciliation
+                         |
+           +-------------+-------------+
+           |                           |
+     Confirmed Run             Confirmed Never Run
+           |                           |
+           v                           v
+     [ EXECUTED ]                [ APPROVED ]
+```
+
+---
+
+## 3. Regression Test Verification Matrix
+
+| Test Suite | Focus Area | Tests | Status |
 |---|---|---|---|
-| `tests/workforce/test_forge_command_security.py` | Shell=False, allowlist, arguments, traversal | 5 | PASSED |
-| `tests/workforce/test_forge_security_p0.py` | Workspace locking, dirty file diffs, test status | 7 | PASSED |
-| `tests/workforce/test_specialist_real_execution_e2e.py` | Tool audit, real specialist execution, no auto fallback | 5 | PASSED |
-| `tests/tools/test_n8n_concurrency.py` | 10-thread race, state transitions, pre-exec rollback | 3 | PASSED |
-| `tests/tools/test_n8n_security_p0.py` | SSRF, path sanitization, approval hash binding | 11 | PASSED |
-| `tests/models/test_model_capability_policy.py` | DeepSeek R1 non-tool, confidence policies, Anthropic | 5 | PASSED |
-| `tests/models/test_model_selection_p0.py` | P0 model selection, privacy fail-closed, normalization | 10 | PASSED |
-| Full backend suite | Workforce, Models, Tools | 85 | PASSED |
-| Frontend Vitest | Store, API, Auth, Telemetry, Capabilities | 117 | PASSED |
-| Frontend Build | Production bundle & assets (`npm run build`) | All chunks | SUCCESS |
+| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; host secrets scrubbed; symlink escape checks; container isolation flags | 8 | PASSED |
+| `tests/workforce/test_forge_command_security.py` | Allowlist enforcement, dangerous shell operators, path traversal, real subprocess execution | 5 | PASSED |
+| `tests/workforce/test_forge_security_p0.py` | Cross-process workspace locking, dirty git snapshot containment, verification states | 7 | PASSED |
+| `tests/tools/test_n8n_ambiguous_outcomes_p0.py` | `outcome_unknown` state, timeout no-auto-restore, pre-transmission failure restore, reconciliation API, idempotency headers, concurrent atomic claims | 6 | PASSED |
+| `tests/tools/test_n8n_concurrency.py` | 10-thread simultaneous claim race, atomic test-and-set conditional updates | 3 | PASSED |
+| `tests/tools/test_n8n_security_p0.py` | SSRF rejection, path traversal, canonical payload hash binding, self-approval denial | 11 | PASSED |
+| `tests/models/test_model_discovery.py` | Deterministic mocked discovery, unreachable providers, 401 auth errors, empty catalogs, 429 rate limits, unconfigured environments | 11 | PASSED |
+| `tests/models/test_model_capability_policy.py` | DeepSeek R1 non-tool enforcement, confidence policies (`CONFIRMED_ONLY`, `DECLARED_OR_CONFIRMED`), Anthropic discovery | 5 | PASSED |
+| `tests/models/test_model_selection_p0.py` | No emergency hardcoded fallbacks, fail-closed privacy, task normalization | 10 | PASSED |
+| `tests/workforce/test_specialist_real_execution_e2e.py` | ToolRegistry audit, real Scout & Forge execution, model selection failure to FAILED state, model propagation | 6 | PASSED |
+| `tests/workforce/test_atlas_orchestrator.py` | Atlas DAG planning, specialist step execution, team messaging | 3 | PASSED |
+| `tests/workforce/test_workforce_e2e.py` | Full multi-agent workforce ERP audit DAG with deterministic fixtures | 1 | PASSED |
+| Full Targeted Backend Suite | Combined workforce, models, and tools security | 104 passed, 1 skipped | PASSED |
+| Frontend Vitest | Store, API, Auth, Telemetry, Capabilities, UI modals | 117 passed (23 files) | PASSED |
+| Production Frontend Build | Vite v8.3.4 static compilation & PWA generation | 3,506 modules | SUCCESS |
 
 ---
 
-## 4. Final Security Sign-off
+## 4. Operational Boundaries and Limitations
 
-Jarvis V1 has met all critical reliability, concurrency, capability enforcement, and sandboxing requirements. All execution gates are fail-closed, verifiable, and protected against unauthorized traversal and concurrency races.
+1. **Host Sandbox Limitation:**
+   When running on environments where Docker or Podman is not active, OS-level process isolation cannot be provided on the bare host. In this environment:
+   - Arbitrary inline executions (`python -c`, `python -m`, `node -e`) fail closed immediately.
+   - Standard test commands (`pytest`, `vitest`, `npm test`) execute on the host with all environment credentials scrubbed and strict path traversal / symlink containment.
+   - For complete untrusted repository sandboxing, Docker Desktop or Podman daemon must be running.
+
+2. **n8n Webhook Ambiguity Limitation:**
+   While n8n workflow executions have a first-class execution audit log (`/rest/executions`), generic unauthenticated webhook endpoints may not log execution IDs if the workflow does not enable "Save execution data". In those cases, reconciliation defaults safely to `STATUS_FAILED` rather than auto-retrying, preventing double triggers.

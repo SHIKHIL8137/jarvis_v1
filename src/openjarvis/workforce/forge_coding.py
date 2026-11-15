@@ -27,29 +27,11 @@ from openjarvis.workforce.registry import AgentWorkforceRegistry, get_workforce_
 
 logger = logging.getLogger(__name__)
 
-# Explicit verification executables permitted for FORGE test verification
-ALLOWED_VERIFICATION_EXECUTABLES: frozenset[str] = frozenset({
-    "pytest",
-    "python",
-    "python3",
-    "py",
-    "npm",
-    "npx",
-    "node",
-    "git",
-    "uv",
-    "ruff",
-    "flake8",
-    "mypy",
-    "black",
-    "isort",
-    "vitest",
-    "jest",
-    "cargo",
-    "go",
-    "pnpm",
-    "yarn",
-})
+from openjarvis.sandbox.verification_runner import (
+    ALLOWED_VERIFICATION_EXECUTABLES,
+    IsolatedVerificationRunner,
+    VerificationOutcome,
+)
 
 
 class VerificationStatus(str, Enum):
@@ -445,226 +427,17 @@ class ForgeCodingEngine:
         return sorted(changed)
 
     def _run_command(self, cmd: str, cwd: str) -> Dict[str, Any]:
-        """Run a verification command safely without shell=True, strictly checking allowlist and workspace boundary."""
-        t0 = time.time()
-        resolved_cwd = Path(cwd).resolve()
+        """Run a verification command safely using isolated container sandbox or sanitized host execution.
 
-        clean_cmd = cmd.strip()
-        if not clean_cmd:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "failed",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": "Empty verification command",
-            }
-
-        # 1. Reject obvious destructive commands and subshell bombs upfront
-        dangerous = ["rm -rf /", "mkfs", "format ", "del /s /q c:", ":(){ :|:& };:"]
-        if any(d in clean_cmd.lower() for d in dangerous):
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "blocked",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Security boundary violation: destructive shell command blocked: '{cmd}'",
-            }
-
-        # 2. Parse command safely into tokens
-        try:
-            raw_tokens = shlex.split(clean_cmd, posix=(sys.platform != "win32"))
-            tokens = []
-            for tok in raw_tokens:
-                if (tok.startswith('"') and tok.endswith('"') and len(tok) >= 2) or (tok.startswith("'") and tok.endswith("'") and len(tok) >= 2):
-                    tokens.append(tok[1:-1])
-                else:
-                    tokens.append(tok)
-        except Exception as parse_err:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "blocked",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Security boundary violation: command parsing error: {parse_err}",
-            }
-
-        if not tokens:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "failed",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": "No command tokens found after parsing",
-            }
-
-        # 3. Check executable against explicit verification allowlist
-        raw_exec = tokens[0]
-        exec_stem = Path(raw_exec).stem.lower()
-        if exec_stem not in ALLOWED_VERIFICATION_EXECUTABLES:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "blocked",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": (
-                    f"Security boundary violation: executable '{raw_exec}' is not in allowed "
-                    f"verification executables: {sorted(ALLOWED_VERIFICATION_EXECUTABLES)}"
-                ),
-            }
-
-        # 4. Validate arguments: strictly reject dangerous shell operators
-        shell_chaining_tokens = {";", "&&", "||", "|", ">", ">>", "<", "<<", "&"}
-        is_python_c = (exec_stem in ("python", "python3", "py") and len(tokens) > 2 and tokens[1] == "-c")
-
-        for idx, token in enumerate(tokens):
-            if token in shell_chaining_tokens:
-                return {
-                    "command": cmd,
-                    "passed": False,
-                    "status": "blocked",
-                    "exit_code": -1,
-                    "duration_seconds": 0.0,
-                    "output": f"Security boundary violation: dangerous shell character '{token}' detected in command arguments.",
-                }
-            if is_python_c and idx == 2:
-                for op in ("`", "$(", "\n", "\r", "$"):
-                    if op in token:
-                        return {
-                            "command": cmd,
-                            "passed": False,
-                            "status": "blocked",
-                            "exit_code": -1,
-                            "duration_seconds": 0.0,
-                            "output": f"Security boundary violation: dangerous shell character '{op}' detected in argument '{token}'",
-                        }
-            else:
-                for op in (";", "&", "|", ">", "<", "$", "`", "\n", "\r"):
-                    if op in token:
-                        return {
-                            "command": cmd,
-                            "passed": False,
-                            "status": "blocked",
-                            "exit_code": -1,
-                            "duration_seconds": 0.0,
-                            "output": f"Security boundary violation: dangerous shell character '{op}' detected in argument '{token}'",
-                        }
-
-        # 5. Validate workspace directory and argument path containment
-        cfg = load_config()
-        configured_allowed = getattr(cfg.security, "allowed_dirs", None)
-        if configured_allowed:
-            allowed_dirs = configured_allowed
-            safe_by_default = False
-        else:
-            allowed_dirs = get_safe_default_dirs()
-            safe_by_default = True
-
-        if not is_path_within_allowed(resolved_cwd, allowed_dirs, safe_by_default=safe_by_default):
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "blocked",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Security boundary violation: cwd '{resolved_cwd}' is outside authorized workspace.",
-            }
-
-        # Check for path traversal in argument tokens
-        for token in tokens[1:]:
-            clean_tok = token.strip()
-            if (
-                clean_tok.startswith("..")
-                or "/.." in clean_tok
-                or "\\.." in clean_tok
-                or clean_tok == ".."
-                or "/etc/" in clean_tok
-                or "\\Windows\\" in clean_tok
-            ):
-                return {
-                    "command": cmd,
-                    "passed": False,
-                    "status": "blocked",
-                    "exit_code": -1,
-                    "duration_seconds": 0.0,
-                    "output": f"Security boundary violation: path traversal not permitted in argument '{token}'",
-                }
-            # If token references an absolute or relative path, verify containment
-            is_absolute_like = any(clean_tok.startswith(p) for p in ("/", "\\", "c:", "C:", "d:", "D:"))
-            if is_absolute_like or (clean_tok.startswith((".", "./", ".\\")) and ("/" in clean_tok or "\\" in clean_tok)):
-                try:
-                    candidate_path = (resolved_cwd / clean_tok).resolve()
-                    if not is_path_within_allowed(candidate_path, allowed_dirs):
-                        return {
-                            "command": cmd,
-                            "passed": False,
-                            "status": "blocked",
-                            "exit_code": -1,
-                            "duration_seconds": 0.0,
-                            "output": f"Security boundary violation: argument '{token}' resolves outside authorized workspace.",
-                        }
-                except Exception:
-                    pass
-
-        # 6. Resolve executable: prioritize current python virtualenv then PATH
-        venv_dir = os.path.dirname(sys.executable)
-        search_path = venv_dir + os.pathsep + os.environ.get("PATH", "")
-        if exec_stem in ("python", "python3", "py"):
-            resolved_exec = sys.executable
-        else:
-            resolved_exec = shutil.which(raw_exec, path=search_path) or shutil.which(raw_exec)
-
-        if not resolved_exec:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "failed",
-                "exit_code": -1,
-                "duration_seconds": 0.0,
-                "output": f"Executable '{raw_exec}' not found in virtual environment or system PATH.",
-            }
-
-        # 7. Execute subprocess strictly with shell=False on BOTH Windows and Linux
-        try:
-            proc = subprocess.run(
-                [resolved_exec, *tokens[1:]],
-                cwd=str(resolved_cwd),
-                shell=False,  # STRICTLY False on BOTH Windows and Linux
-                capture_output=True,
-                text=True,
-                timeout=120.0,
-            )
-            passed = (proc.returncode == 0)
-            return {
-                "command": cmd,
-                "passed": passed,
-                "status": "passed" if passed else "failed",
-                "exit_code": proc.returncode,
-                "duration_seconds": round(time.time() - t0, 2),
-                "output": (proc.stdout + "\n" + proc.stderr).strip()[-2000:],
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "failed",
-                "exit_code": -1,
-                "duration_seconds": round(time.time() - t0, 2),
-                "output": "Command timed out after 120s",
-            }
-        except Exception as exc:
-            return {
-                "command": cmd,
-                "passed": False,
-                "status": "failed",
-                "exit_code": -1,
-                "duration_seconds": round(time.time() - t0, 2),
-                "output": str(exc),
-            }
+        Enforces:
+        - Rejection of dangerous shell metacharacters and path traversal
+        - Strict symlink escape rejection
+        - Disallowance of untrusted arbitrary inline code (python -c, python -m, node -e) without container sandbox
+        - Full environment credential scrubbing (zero host secrets accessible to subprocess)
+        - Resource caps and execution timeout
+        """
+        runner = IsolatedVerificationRunner()
+        return runner.execute_verification_command(cmd, cwd=cwd)
 
     def _auto_verify_tests(self, workdir: Path) -> Optional[Dict[str, Any]]:
         """Attempt best-effort test verification if test files are present."""

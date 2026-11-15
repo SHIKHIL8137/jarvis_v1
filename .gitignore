@@ -136,3 +136,6 @@ oj-debug.*.json
 # local scratch
 .playwright-mcp/
 /*.png
+
+# Node modules (root)
+node_modules/

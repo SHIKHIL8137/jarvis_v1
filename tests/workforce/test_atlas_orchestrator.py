@@ -12,14 +12,38 @@ from openjarvis.workforce.store import WorkforceStore
 
 @pytest.fixture
 def temp_workforce_setup():
+    from unittest.mock import MagicMock, patch
+    from openjarvis.models.capabilities import SelectionResult
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "workforce.db"
         store = WorkforceStore(db_path=db_path)
         registry = AgentWorkforceRegistry(store=store)
         registry.initialize_workforce()
         orchestrator = AtlasOrchestrator(registry=registry)
-        yield registry, orchestrator, store
-        store.close()
+
+        # Deterministic mock model selection for orchestrator tests
+        mock_engine = MagicMock()
+        mock_engine.select_model.return_value = SelectionResult(
+            model_id="mock-orchestrator-model",
+            provider="mock",
+            task_type="general",
+            reason="Deterministic test model fixture",
+            policy="balanced",
+            is_local=True,
+            context_length=8192,
+            score=1.0,
+            candidate_scores={"mock-orchestrator-model": 1.0},
+            is_compatible=True,
+        )
+        patcher = patch("openjarvis.models.get_model_selection_engine", return_value=mock_engine)
+        patcher.start()
+
+        try:
+            yield registry, orchestrator, store
+        finally:
+            patcher.stop()
+            store.close()
 
 
 def test_dynamic_task_planning_erp(temp_workforce_setup):
