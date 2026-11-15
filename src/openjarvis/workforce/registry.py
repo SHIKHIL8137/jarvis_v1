@@ -61,8 +61,8 @@ class AgentWorkforceRegistry:
     ) -> None:
         self.store = store or WorkforceStore()
         self.bus = bus
-        self._manifests: Dict[str, AgentManifest] = {}
-        self._states: Dict[str, AgentRuntimeState] = {}
+        self._manifests: Dict[str, AgentManifest] = load_manifests_from_disk()
+        self._states: Dict[str, AgentRuntimeState] = {aid: AgentRuntimeState.IDLE for aid in self._manifests}
         self._heartbeats: Dict[str, AgentHeartbeat] = {}
         self._active_tasks: Dict[str, str] = {}  # agent_id -> task_id
         self._lock = threading.RLock()
@@ -108,11 +108,29 @@ class AgentWorkforceRegistry:
                 )
                 self._states[agent_id] = final_state
 
+                # Dynamic model allocation based on agent capabilities
+                try:
+                    from openjarvis.models import get_model_selection_engine
+
+                    sel_engine = get_model_selection_engine()
+                    sel = sel_engine.select_model(
+                        task_type=manifest.id,
+                        required_capabilities=manifest.required_capabilities,
+                        local_only=manifest.local_only,
+                        preferred_model=manifest.model_preference,
+                        fallback_model=manifest.model_fallback,
+                        agent_id=manifest.id,
+                    )
+                    active_model = sel.model_id
+                except Exception as exc:
+                    logger.debug("Dynamic model selection for %s fell back: %s", agent_id, exc)
+                    active_model = manifest.model_preference or "discovered-auto"
+
                 hb = AgentHeartbeat(
                     agent_id=agent_id,
                     status=final_state,
                     timestamp=time.time(),
-                    active_model=manifest.model_preference,
+                    active_model=active_model,
                     runtime_health="healthy" if healthy else "degraded",
                     last_error=None if healthy else reason,
                     available_tools=self._resolve_tools(manifest),
@@ -121,7 +139,7 @@ class AgentWorkforceRegistry:
                 self.store.update_runtime_status(
                     agent_id=agent_id,
                     status=final_state,
-                    active_model=manifest.model_preference,
+                    active_model=active_model,
                     runtime_health=hb.runtime_health,
                     last_error=hb.last_error,
                 )
@@ -248,7 +266,9 @@ class AgentWorkforceRegistry:
                 timestamp=now,
                 current_task_id=current_task_id,
                 active_model=active_model
-                or self._manifests[agent_id].model_preference,
+                or getattr(self._heartbeats.get(agent_id), "active_model", None)
+                or self._manifests[agent_id].model_preference
+                or "auto",
                 runtime_health="healthy" if not error else "degraded",
                 last_error=error,
                 available_tools=self._resolve_tools(self._manifests[agent_id]),
@@ -317,8 +337,8 @@ class AgentWorkforceRegistry:
                         "enabled": m.enabled,
                         "status": st.value,
                         "active_model": hb.active_model
-                        if hb
-                        else m.model_preference,
+                        if (hb and hb.active_model)
+                        else (m.model_preference or "auto"),
                         "current_task_id": self._active_tasks.get(m.id),
                         "runtime_health": hb.runtime_health if hb else "offline",
                         "last_heartbeat": hb.timestamp if hb else None,

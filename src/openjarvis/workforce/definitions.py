@@ -28,8 +28,7 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "assign the appropriate specialist agents (Oracle, Forge, Sentinel, Scout, Vanguard, Pulse), coordinate "
             "parallel execution, resolve dependencies, and compile a single authoritative, cohesive report for the user."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="gpt-4o-mini",
+        required_capabilities=["reasoning", "structured_output", "planning"],
         allowed_tools=["think", "knowledge_search"],
         allowed_capabilities=["planning", "coordination", "synthesis"],
         max_execution_time_seconds=600,
@@ -50,8 +49,7 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "retrieve authoritative web and document sources, extract verified quotations, and write comprehensive "
             "evidence-backed research reports. You strictly verify every cited claim against raw source text."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="gpt-4o-mini",
+        required_capabilities=["research", "reasoning", "long_context", "evidence_extraction"],
         allowed_tools=["knowledge_search", "think", "file_read"],
         denied_tools=["shell_exec", "file_write", "desktop", "channel_send"],
         allowed_capabilities=["research", "web_read", "evidence_extraction"],
@@ -74,9 +72,8 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "design software architectures, write unit tests, and implement verified code changes. You operate strictly "
             "within permitted workspace folders and never bypass the approval gateway for code modifications."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="claude-3-5-sonnet-20241022",
-        allowed_tools=["file_read", "file_write", "shell_exec", "git_status", "git_diff", "think"],
+        required_capabilities=["coding", "tool_calling", "code_analysis"],
+        allowed_tools=["file_read", "file_write", "shell_exec", "git_status", "git_diff", "forge_coding", "code_goal", "think"],
         denied_tools=["desktop", "channel_send"],
         allowed_capabilities=["file:read", "file:write", "code:execute"],
         max_execution_time_seconds=900,
@@ -97,8 +94,7 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "inspect configuration boundaries, analyze dependencies for known vulnerabilities, verify permission "
             "isolation, and flag security risks before any sensitive operations proceed."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="gpt-4o-mini",
+        required_capabilities=["security", "code_analysis", "reasoning"],
         allowed_tools=["file_read", "think", "knowledge_search"],
         denied_tools=["desktop", "channel_send"],
         allowed_capabilities=["security:audit", "file:read"],
@@ -121,8 +117,7 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "documentation and code files, analyze document contents, search long-term memory facts, and supply structured "
             "context to the rest of the team."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="gpt-4o-mini",
+        required_capabilities=["retrieval", "file_indexing", "tool_calling"],
         allowed_tools=["file_read", "knowledge_search", "think"],
         denied_tools=["shell_exec", "file_write", "desktop", "channel_send"],
         allowed_capabilities=["file:read", "memory:read"],
@@ -145,8 +140,7 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "You execute tests, verify that claims are supported by authoritative evidence, inspect proposed diffs, "
             "and flag inconsistencies or regressions before final reporting."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="gpt-4o-mini",
+        required_capabilities=["verification", "reasoning", "structured_output"],
         allowed_tools=["file_read", "shell_exec", "think"],
         denied_tools=["desktop", "channel_send"],
         allowed_capabilities=["file:read", "code:execute", "verification"],
@@ -169,9 +163,8 @@ INITIAL_WORKFORCE: List[AgentManifest] = [
             "health checks, coordinate reminders, monitor background services, and respect quiet hours for unsolicited "
             "announcements."
         ),
-        model_preference="qwen2.5:3b",
-        model_fallback="gpt-4o-mini",
-        allowed_tools=["think", "knowledge_search"],
+        required_capabilities=["tool_calling", "operations", "scheduling"],
+        allowed_tools=["think", "knowledge_search", "n8n"],
         allowed_capabilities=["routines", "monitoring", "operations"],
         max_execution_time_seconds=300,
         max_tool_calls=20,

@@ -24,11 +24,18 @@ class ModelRouter:
 
     def __init__(
         self,
-        default_model: str = "qwen2.5:3b",
+        default_model: Optional[str] = None,
         vram_limit_mb: int = 4096,
         engine: Optional[Any] = None,
     ) -> None:
-        self.active_model = default_model
+        if not default_model:
+            try:
+                from openjarvis.models.selector import ModelSelectionEngine
+                res = ModelSelectionEngine.get_instance().select_model(task_type="chat")
+                default_model = res.model_name
+            except Exception:
+                default_model = "auto"
+        self.active_model = default_model or "auto"
         self.vram_limit_mb = vram_limit_mb
         self.engine = engine
 
@@ -77,8 +84,8 @@ class ModelRouter:
         }
 
     def list_models(self) -> Dict[str, Any]:
-        """List known models from engine or defaults."""
-        available = []
+        """List known models from engine or discovery engine without hardcoding."""
+        available: List[str] = []
         if self.engine and hasattr(self.engine, "list_models"):
             try:
                 available = self.engine.list_models()
@@ -86,16 +93,19 @@ class ModelRouter:
                 logger.warning("Failed to list models from engine: %s", exc)
 
         if not available:
-            available = [
-                "qwen2.5:3b",
-                "llama3.2:3b",
-                "deepseek-r1:1.5b",
-                "phi3:mini",
-                "gpt-4o-mini",
-                "claude-3-5-sonnet-20241022",
-            ]
+            try:
+                from openjarvis.models.discovery import ModelDiscoveryEngine
+                discovered = ModelDiscoveryEngine.get_instance().get_all_models()
+                if not discovered:
+                    discovered = ModelDiscoveryEngine.get_instance().discover_all()
+                available = [m.id for m in discovered]
+            except Exception as exc:
+                logger.warning("Failed to list models from discovery engine: %s", exc)
 
-        if self.active_model not in available:
+        if not available and self.active_model:
+            available = [self.active_model]
+
+        if self.active_model and self.active_model not in available:
             available.insert(0, self.active_model)
 
         return {

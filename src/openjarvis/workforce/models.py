@@ -26,15 +26,23 @@ class AgentRuntimeState(str, Enum):
 
 @dataclass
 class AgentManifest:
-    """Configurable definition manifest for an agent in the workforce."""
+    """Configurable definition manifest for an agent in the workforce.
+    
+    Agent identity is strictly independent of model identity. Required capabilities
+    and execution constraints are defined here; models are dynamically allocated
+    per-task by the ModelSelectionEngine.
+    """
 
     id: str
     display_name: str
     role: str
     description: str
     system_instructions: str
-    model_preference: str = "qwen2.5:3b"
-    model_fallback: str = "gpt-4o-mini"
+    required_capabilities: List[str] = field(default_factory=list)
+    model_preference: Optional[str] = None  # Optional user override only
+    model_fallback: Optional[str] = None  # Optional user override only
+    local_only: bool = False
+    min_context_tokens: int = 4096
     allowed_tools: List[str] = field(default_factory=list)
     denied_tools: List[str] = field(default_factory=list)
     allowed_capabilities: List[str] = field(default_factory=list)
@@ -66,7 +74,7 @@ class AgentHeartbeat:
     status: AgentRuntimeState = AgentRuntimeState.IDLE
     timestamp: float = field(default_factory=time.time)
     current_task_id: Optional[str] = None
-    active_model: str = "qwen2.5:3b"
+    active_model: str = ""
     runtime_health: str = "healthy"  # healthy | degraded | failing
     last_error: Optional[str] = None
     available_tools: List[str] = field(default_factory=list)

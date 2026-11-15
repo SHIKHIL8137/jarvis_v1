@@ -78,13 +78,48 @@ flowchart TD
 
 ---
 
-## 4. Source Files Map
+## 4. Dynamic Model Intelligence & Resource Governance
+
+Every agent's identity is strictly decoupled from AI model strings. Tasks are dynamically routed by the `ModelSelectionEngine` (`src/openjarvis/models/selector.py`):
+- **Model Discovery:** Dynamically detects local vLLM, Ollama, LM Studio, and NIM instances, alongside cloud APIs.
+- **Hardware-Aware Allocation:** Enforces 4 GB VRAM ceiling on GTX 1650 and limits local concurrency to 2 simultaneous inferences.
+- **Shared Memory Pool:** Models already in GPU memory receive a $+15\text{ point}$ bonus to eliminate unnecessary weight thrashing.
+- **Failure Recovery:** Models that encounter runtime failures receive dynamic score penalties and transparently re-route to alternative candidates.
+
+---
+
+## 5. FORGE Coding Engine & OpenCode Integration
+
+FORGE executes software engineering tasks through `ForgeCodingEngine` (`src/openjarvis/workforce/forge_coding.py`):
+- **Dual Execution Engine:** Uses headless `OpenCodeAgent` if available (version 1.19.5 on PATH), falling back seamlessly to native `GoalLoop` (`openjarvis/coding/goal.py`).
+- **Workspace File Locking:** Prevents concurrent step writes to project files using `WorkspaceLock`.
+- **Automated Verification:** Executes `pytest` or `npm test` and measures git diffs before producing verified reports.
+
+---
+
+## 6. n8n Automation Connector & PULSE
+
+PULSE integrates with n8n at `https://n8n.kavlien.store` through `N8nTool` (`src/openjarvis/tools/n8n.py`):
+- **Dual Authentication:** Supports API key (`X-N8N-API-KEY`) and session login (`/rest/login` with `emailOrLdapLoginId`).
+- **Cookie Caching (6-Day TTL):** Completely prevents HTTP 429 Too Many Requests rate limits.
+- **Approval Gating:** Mutating workflow executions are strictly gated by `ApprovalStore`.
+
+---
+
+## 7. Source Files Map
 
 - **Workforce Models:** [src/openjarvis/workforce/models.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/models.py)
 - **Workforce Definitions:** [src/openjarvis/workforce/definitions.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/definitions.py)
 - **Workforce Persistence:** [src/openjarvis/workforce/store.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/store.py)
 - **Workforce Registry:** [src/openjarvis/workforce/registry.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/registry.py)
 - **Atlas Orchestrator:** [src/openjarvis/workforce/orchestrator.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/orchestrator.py)
-- **Team Communication:** [src/openjarvis/workforce/communication.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/communication.py)
+- **Model Discovery:** [src/openjarvis/models/discovery.py](file:///d:/projects/oprn-jarvis/src/openjarvis/models/discovery.py)
+- **Model Selector:** [src/openjarvis/models/selector.py](file:///d:/projects/oprn-jarvis/src/openjarvis/models/selector.py)
+- **Forge Coding Engine:** [src/openjarvis/workforce/forge_coding.py](file:///d:/projects/oprn-jarvis/src/openjarvis/workforce/forge_coding.py)
+- **n8n Automation Tool:** [src/openjarvis/tools/n8n.py](file:///d:/projects/oprn-jarvis/src/openjarvis/tools/n8n.py)
 - **Workforce API Endpoints:** [src/openjarvis/server/workforce_routes.py](file:///d:/projects/oprn-jarvis/src/openjarvis/server/workforce_routes.py)
+- **Models API Endpoints:** [src/openjarvis/server/models_routes.py](file:///d:/projects/oprn-jarvis/src/openjarvis/server/models_routes.py)
+- **n8n API Endpoints:** [src/openjarvis/server/n8n_routes.py](file:///d:/projects/oprn-jarvis/src/openjarvis/server/n8n_routes.py)
 - **React Frontend:** [frontend/src/components/Desktop/AgentWorkforce.tsx](file:///d:/projects/oprn-jarvis/frontend/src/components/Desktop/AgentWorkforce.tsx)
+- **Model Intelligence Panel:** [frontend/src/components/Desktop/ModelIntelligencePanel.tsx](file:///d:/projects/oprn-jarvis/frontend/src/components/Desktop/ModelIntelligencePanel.tsx)
+- **n8n Connector Panel:** [frontend/src/components/Desktop/N8nPanel.tsx](file:///d:/projects/oprn-jarvis/frontend/src/components/Desktop/N8nPanel.tsx)

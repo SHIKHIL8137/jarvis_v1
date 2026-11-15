@@ -77,6 +77,17 @@ class AtlasOrchestrator:
         if engine and hasattr(engine, "generate"):
             try:
                 from openjarvis.core.types import Message, Role
+                from openjarvis.models import get_model_selection_engine
+
+                selected_model = model_name
+                if not selected_model:
+                    try:
+                        sel_engine = get_model_selection_engine()
+                        sel = sel_engine.select_model(task_type="planning")
+                        selected_model = sel.model_id
+                    except Exception as sel_err:
+                        logger.debug("Planning model selection fallback: %s", sel_err)
+                        selected_model = "auto"
 
                 prompt = PLANNER_PROMPT_TEMPLATE.format(user_request=user_request)
                 resp = engine.generate(
@@ -84,7 +95,7 @@ class AtlasOrchestrator:
                         Message(role=Role.SYSTEM, content="You are a precise task planner that outputs only JSON."),
                         Message(role=Role.USER, content=prompt),
                     ],
-                    model=model_name or "qwen2.5:3b",
+                    model=selected_model,
                     temperature=0.2,
                 )
                 text = resp.get("text", "") if isinstance(resp, dict) else str(resp)
@@ -288,17 +299,51 @@ class AtlasOrchestrator:
 
         return steps
 
+    def execute_step_safely(self, step: TaskStep, task_id: str = "task-default") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Standard executor routing to appropriate specialist runtime or tool."""
+        if step.assigned_agent == "forge" and step.tool_name in ("forge_coding", "code_goal", "coding", "code_interpreter"):
+            from openjarvis.workforce.forge_coding import ForgeCodingEngine
+            engine = ForgeCodingEngine(registry=self.registry)
+            report = engine.execute_coding_task(
+                task_id=task_id,
+                step_id=step.step_id,
+                objective=step.description or step.title,
+                workdir=step.tool_params.get("workdir"),
+                verification_cmd=step.tool_params.get("verification_cmd"),
+            )
+            if report.errors:
+                return report.to_dict(), "; ".join(report.errors)
+            return report.to_dict(), None
+
+        from openjarvis.core.registry import ToolRegistry
+        if not ToolRegistry.contains(step.tool_name):
+            if step.tool_name == "think":
+                return {"result": step.tool_params.get("thought", "Analyzed")}, None
+            return None, f"Tool '{step.tool_name}' not registered"
+
+        try:
+            tool_cls = ToolRegistry.get(step.tool_name)
+            tool_inst = tool_cls() if callable(tool_cls) else tool_cls
+            res = tool_inst.execute(**step.tool_params)
+            if hasattr(res, "success") and not res.success:
+                return None, str(getattr(res, "content", "Execution failed"))
+            content = getattr(res, "content", str(res))
+            return {"content": content, "success": True}, None
+        except Exception as exc:
+            return None, str(exc)
+
     def execute_multi_agent_plan(
         self,
         task_id: str,
         user_request: str,
         steps: List[TaskStep],
-        step_executor: Callable[[TaskStep], Tuple[Optional[Dict[str, Any]], Optional[str]]],
+        step_executor: Optional[Callable[[TaskStep], Tuple[Optional[Dict[str, Any]], Optional[str]]]] = None,
     ) -> Dict[str, Any]:
         """Execute task steps according to DAG dependencies with bounded concurrency."""
         completed_step_ids: Set[str] = set()
         agent_reports: List[AgentReport] = []
         start_time = time.time()
+        actual_executor = step_executor or (lambda s: self.execute_step_safely(s, task_id=task_id))
 
         # Step lookup
         steps_by_id = {s.step_id: s for s in steps}
@@ -328,8 +373,16 @@ class AtlasOrchestrator:
                 for step in ready_steps:
                     step.status = StepStatus.RUNNING
                     step.started_at = time.time()
-                    self.registry.record_heartbeat(step.assigned_agent, current_task_id=task_id)
-                    futures[executor.submit(step_executor, step)] = step
+                    try:
+                        from openjarvis.models import get_model_selection_engine
+
+                        sel_engine = get_model_selection_engine()
+                        sel = sel_engine.select_model(task_type=step.assigned_agent, agent_id=step.assigned_agent)
+                        step_model = sel.model_id
+                    except Exception:
+                        step_model = "auto"
+                    self.registry.record_heartbeat(step.assigned_agent, current_task_id=task_id, active_model=step_model)
+                    futures[executor.submit(actual_executor, step)] = step
 
                 for future in concurrent.futures.as_completed(futures):
                     step = futures[future]
@@ -347,16 +400,19 @@ class AtlasOrchestrator:
                             self.registry.set_agent_state(step.assigned_agent, AgentRuntimeState.IDLE)
 
                             # Record structured agent report
-                            rep = AgentReport(
-                                agent_id=step.assigned_agent,
-                                task_id=task_id,
-                                step_id=step.step_id,
-                                work_performed=f"Executed {step.title}: {step.description}",
-                                findings=[{"title": step.title, "summary": str(result)}],
-                                results=result or {},
-                                errors=[error] if error else [],
-                                confidence=0.95 if not error else 0.4,
-                            )
+                            if isinstance(result, dict) and "agent_id" in result and "work_performed" in result:
+                                rep = AgentReport.from_dict(result)
+                            else:
+                                rep = AgentReport(
+                                    agent_id=step.assigned_agent,
+                                    task_id=task_id,
+                                    step_id=step.step_id,
+                                    work_performed=f"Executed {step.title}: {step.description}",
+                                    findings=[{"title": step.title, "summary": str(result)}],
+                                    results=result if isinstance(result, dict) else {"output": str(result)},
+                                    errors=[error] if error else [],
+                                    confidence=0.95 if not error else 0.4,
+                                )
                             agent_reports.append(rep)
                             self.registry.store.save_report(rep)
                     except Exception as exc:

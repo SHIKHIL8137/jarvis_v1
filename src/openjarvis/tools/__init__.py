@@ -198,4 +198,14 @@ try:
 except ImportError:
     pass
 
+try:
+    import openjarvis.tools.n8n  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.workforce.forge_coding  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]

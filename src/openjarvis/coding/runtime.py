@@ -38,6 +38,18 @@ def engine_for(model: str) -> Any:
 
 
 def pick_model(kind: str) -> str:
+    try:
+        from openjarvis.models.selector import ModelSelectionEngine
+        task_type = "coding"
+        if kind == "review":
+            task_type = "review"
+        elif kind == "reasoning":
+            task_type = "reasoning"
+        res = ModelSelectionEngine.get_instance().select_model(task_type=task_type)
+        if res and res.model_name:
+            return res.model_name
+    except Exception:
+        pass
     from openjarvis.routing.auto_router import model_for
 
     return model_for(kind)

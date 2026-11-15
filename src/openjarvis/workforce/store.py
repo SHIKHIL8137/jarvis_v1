@@ -136,7 +136,7 @@ class WorkforceStore:
         agent_id: str,
         status: AgentRuntimeState,
         current_task_id: Optional[str] = None,
-        active_model: str = "qwen2.5:3b",
+        active_model: str = "",
         runtime_health: str = "healthy",
         last_error: Optional[str] = None,
     ) -> None:

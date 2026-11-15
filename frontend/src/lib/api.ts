@@ -1603,3 +1603,193 @@ export async function fetchStartupAnnouncement(): Promise<string> {
   const data = await res.json();
   return data.announcement ?? '';
 }
+
+// ---------------------------------------------------------------------------
+// Model Intelligence & Dynamic Allocation API
+// ---------------------------------------------------------------------------
+
+export type DiscoveredModel = {
+  id: string;
+  name: string;
+  provider: string;
+  is_local: boolean;
+  capabilities: {
+    tool_calling: boolean;
+    structured_output: boolean;
+    coding: boolean;
+    reasoning: boolean;
+    vision: boolean;
+    embedding: boolean;
+  };
+  context_tokens: number;
+  parameter_size_b?: number;
+  cost_per_m_out: number;
+  latency_tier: string;
+  loaded_in_vram: boolean;
+};
+
+export type ModelProviderStatus = {
+  provider: string;
+  type: string;
+  endpoint?: string;
+  online: boolean;
+  model_count: number;
+  configured?: boolean;
+};
+
+export type ModelPolicyResponse = {
+  active_policy: string;
+  available_policies: string[];
+  vram_limit_mb: number;
+  max_concurrent_inferences: number;
+};
+
+export type ModelSelectionExplanation = {
+  selected_model: string;
+  provider: string;
+  is_local: boolean;
+  score: number;
+  rationale: string;
+  task_type: string;
+  policy_used: string;
+  vram_allocated_mb: number;
+  candidate_scores: Record<string, number>;
+};
+
+export type HardwareProfile = {
+  vram_limit_mb: number;
+  max_concurrent_inferences: number;
+  active_inferences: number;
+  gpu_detected: string;
+  cpu_profile: string;
+};
+
+export async function fetchDiscoveredModels(refresh: boolean = false): Promise<{
+  total: number;
+  local_count: number;
+  cloud_count: number;
+  models: DiscoveredModel[];
+}> {
+  const res = await apiFetch(`/v1/models/discovered?refresh=${refresh}`);
+  if (!res.ok) return { total: 0, local_count: 0, cloud_count: 0, models: [] };
+  return await res.json();
+}
+
+export async function fetchModelProviders(): Promise<ModelProviderStatus[]> {
+  const res = await apiFetch('/v1/models/providers');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.providers ?? [];
+}
+
+export async function fetchModelPolicy(): Promise<ModelPolicyResponse | null> {
+  const res = await apiFetch('/v1/models/policy');
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export async function updateModelPolicy(policy: string): Promise<string> {
+  const res = await apiFetch('/v1/models/policy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ policy }),
+  });
+  if (!res.ok) throw new Error(`Policy update failed (${res.status})`);
+  const data = await res.json();
+  return data.active_policy ?? policy;
+}
+
+export async function explainModelSelection(
+  taskType: string,
+  agentId?: string,
+): Promise<ModelSelectionExplanation | null> {
+  const res = await apiFetch('/v1/models/select', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_type: taskType, agent_id: agentId }),
+  });
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export async function switchAgentModel(agentId: string, model: string): Promise<boolean> {
+  const res = await apiFetch('/v1/models/switch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId, model }),
+  });
+  return res.ok;
+}
+
+export async function fetchHardwareProfile(): Promise<HardwareProfile | null> {
+  const res = await apiFetch('/v1/models/hardware');
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+// ---------------------------------------------------------------------------
+// n8n Workflow Automation API
+// ---------------------------------------------------------------------------
+
+export type N8nStatus = {
+  online: boolean;
+  status_code: number;
+  base_url: string;
+  latency_ms: number;
+  auth_mode: string;
+  error?: string;
+};
+
+export type N8nWorkflowSummary = {
+  id: string;
+  name: string;
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  tags?: string[];
+};
+
+export async function fetchN8nStatus(): Promise<N8nStatus> {
+  const res = await apiFetch('/v1/n8n/status');
+  if (!res.ok) {
+    return {
+      online: false,
+      status_code: res.status,
+      base_url: '',
+      latency_ms: 0,
+      auth_mode: 'unknown',
+      error: `HTTP ${res.status}`,
+    };
+  }
+  return await res.json();
+}
+
+export async function fetchN8nWorkflows(): Promise<N8nWorkflowSummary[]> {
+  const res = await apiFetch('/v1/n8n/workflows');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.workflows ?? [];
+}
+
+export async function executeN8nWorkflow(
+  workflowId: string,
+  data?: any,
+  approvalId?: string,
+): Promise<any> {
+  const res = await apiFetch(`/v1/n8n/workflows/${workflowId}/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data, approval_id: approvalId }),
+  });
+  return await res.json();
+}
+
+export async function triggerN8nWebhook(path: string, data?: any): Promise<any> {
+  const res = await apiFetch(`/v1/n8n/webhooks/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  });
+  return await res.json();
+}
+

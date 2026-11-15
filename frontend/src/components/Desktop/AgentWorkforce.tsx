@@ -18,6 +18,8 @@ import {
   X,
   ListOrdered,
   FileCheck2,
+  Cpu,
+  Workflow,
 } from 'lucide-react';
 import {
   fetchWorkforceAgents,
@@ -31,6 +33,8 @@ import {
   type TeamSummary,
   type TaskTimeline,
 } from '../../lib/api';
+import { ModelIntelligencePanel } from './ModelIntelligencePanel';
+import { N8nPanel } from './N8nPanel';
 
 const AGENT_ICONS: Record<string, any> = {
   atlas: Users,
@@ -68,6 +72,7 @@ export function AgentWorkforce() {
   const [statusQuery, setStatusQuery] = useState('');
   const [statusAnswer, setStatusAnswer] = useState<string | null>(null);
   const [querying, setQuerying] = useState(false);
+  const [workforceTab, setWorkforceTab] = useState<'roster' | 'models' | 'n8n'>('roster');
 
   const loadWorkforce = useCallback(async () => {
     setLoading(true);
@@ -185,7 +190,49 @@ export function AgentWorkforce() {
         </div>
       </div>
 
-      {/* Summary Metrics Bar */}
+      {/* Sub-tab Navigation */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 border-b pb-3" style={{ borderColor: 'var(--color-border)' }}>
+        <button
+          onClick={() => setWorkforceTab('roster')}
+          className={`flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            workforceTab === 'roster'
+              ? 'bg-blue-600 text-white'
+              : 'hover:bg-zinc-800 text-zinc-400'
+          }`}
+        >
+          <Users size={14} />
+          Workforce Roster (7 Specialists)
+        </button>
+        <button
+          onClick={() => setWorkforceTab('models')}
+          className={`flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            workforceTab === 'models'
+              ? 'bg-blue-600 text-white'
+              : 'hover:bg-zinc-800 text-zinc-400'
+          }`}
+        >
+          <Cpu size={14} />
+          Model Intelligence &amp; Hardware
+        </button>
+        <button
+          onClick={() => setWorkforceTab('n8n')}
+          className={`flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            workforceTab === 'n8n'
+              ? 'bg-blue-600 text-white'
+              : 'hover:bg-zinc-800 text-zinc-400'
+          }`}
+        >
+          <Workflow size={14} />
+          n8n Automation Connector
+        </button>
+      </div>
+
+      {workforceTab === 'models' && <ModelIntelligencePanel />}
+      {workforceTab === 'n8n' && <N8nPanel />}
+
+      {workforceTab === 'roster' && (
+        <>
+          {/* Summary Metrics Bar */}
       {summary && (
         <div
           className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 p-3 rounded-lg mb-4 text-center text-xs"
@@ -610,6 +657,8 @@ export function AgentWorkforce() {
             ))}
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );
