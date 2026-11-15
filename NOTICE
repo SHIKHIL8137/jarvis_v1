@@ -1,0 +1,16 @@
+Jarvis
+Copyright 2026 SHIKHIL8137
+
+This product is a derivative work based on OpenJarvis
+(https://github.com/open-jarvis/OpenJarvis), Copyright the OpenJarvis
+Contributors, which is licensed under the Apache License, Version 2.0.
+
+The modifications and additions made in this repository by SHIKHIL8137 are
+likewise licensed under the Apache License, Version 2.0 (see LICENSE). They
+include: voice conversation mode, desktop and browser control tools, folder
+permissions and approvals, automatic model routing, and the coding agent
+(goal loop, plan/review/init commands, subagents, edit/grep/glob/todo tools,
+tool-argument repair, project-instruction discovery and context compaction).
+
+The coding agent's design follows ideas from opencode (https://opencode.ai,
+MIT License), reimplemented here in Python.
