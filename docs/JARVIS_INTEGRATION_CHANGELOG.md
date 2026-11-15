@@ -90,3 +90,65 @@
 - `docs/JARVIS_MULTI_AGENT_ARCHITECTURE.md`
 - `docs/JARVIS_MODEL_TEST_REPORT.md`
 - `docs/JARVIS_INTEGRATION_CHANGELOG.md`
+
+---
+
+## 3. Production Readiness & Critical Security Pass (P0 & P1 Remediation)
+
+### 3.1 P0 — Model Selection Correctness
+- **Eliminated Hardcoded Fallbacks**: Removed all occurrences of `"qwen3:4b-instruct"` emergency defaults in `selector.py`.
+- **Explicit Failure Result**: Returned `NoCompatibleModelAvailableResult` (with `is_compatible=False`, `model_id=""`, and `error="NoCompatibleModelAvailable"`) and raised `NoCompatibleModelAvailable` when `raise_on_none=True`.
+- **Zero Invented Models**: Enforced that only models discovered from live local or cloud providers can ever be selected.
+- **Strict Capability Enforcement**: Candidate filtering enforces that every required capability must be present; unknown capability metadata is never assumed as confirmed support.
+- **Capability Provenance**: Added `CapabilityProvenance` enum (`confirmed`, `provider_declared`, `inferred`, `unknown`) in `capabilities.py`.
+- **Fail-Closed Privacy Policy**: Enforced that `privacy-first` policy fails closed immediately if no healthy local model meets constraints, never falling through to a cloud model.
+- **Signature Mismatch Correction**: Synchronized `select_model()` signature to handle `requires_tools`, `requires_vision`, `requires_reasoning`, and `max_cost_per_m`.
+- **Task Type Normalization**: Mapped agent IDs (`forge`, `oracle`, `sentinel`, `vanguard`, `pulse`, `atlas`) to canonical `TaskType` categories via `AGENT_TO_TASK_MAP`.
+- **Runtime Model Allocation**: Ensured the selected model is passed to the step execution runtime and used by `ForgeCodingEngine`.
+- **Regression Tests**: Added `tests/models/test_model_selection_p0.py` (9 tests passing).
+
+### 3.2 P0 — n8n Approval Security
+- **Sensitive Webhook Gating**: Webhook triggers (`trigger_webhook`) now strictly require human approval.
+- **Canonical Payload Hashing**: Action permission keys incorporate deterministic SHA-256 hashes of canonicalized payloads: `n8n:{action}:{target}:{payload_hash}`.
+- **Workflow Isolation**: An approval for workflow A cannot authorize workflow B; modified payloads invalidate approvals.
+- **Single-Use Semantics**: Approvals transition to `STATUS_EXECUTED` immediately upon execution, preventing replay attacks.
+- **Expiry Enforcement**: Expired approvals transition to `STATUS_EXPIRED` and reject execution.
+- **Self-Approval Prevention**: Agent-generated requests cannot approve themselves.
+- **Real Cookie Expiry**: Parsed `Max-Age` and `Expires` directives in `Set-Cookie` headers instead of hardcoded TTL.
+- **SSRF & Traversal Protection**: Validated base URLs for HTTP/HTTPS schemes and sanitized endpoint paths against directory traversal (`..`).
+- **Health Distinction**: Differentiated basic network reachability (`/healthz`) from authenticated API health.
+- **No REST Bypass**: Updated `POST /v1/n8n/webhooks/{path}` in `n8n_routes.py` to route through approval gates.
+- **Regression Tests**: Added `tests/tools/test_n8n_security_p0.py` (11 tests passing).
+
+### 3.3 P0 — FORGE Execution Security
+- **Cross-Process File Locking**: Replaced in-memory lock with OS-level byte locking (`msvcrt.locking` on Windows, `fcntl.flock` on POSIX) and per-workspace lock files.
+- **Baseline Git Diff Containment**: Captured baseline snapshot prior to task execution and diffed strictly against post-execution state, completely ignoring pre-existing dirty files.
+- **Truthful Verification**: Verification returns `not_run` (verified=False) when no tests are executed; never reports success without test evidence.
+- **Explicit Verification States**: Enforced `passed`, `failed`, `not_run`, `blocked`, and `inconclusive`.
+- **Containment & Shell Hardening**: Blocked path traversal (`..`) escaping workspace boundaries and blocked destructive shell patterns.
+- **Regression Tests**: Added `tests/workforce/test_forge_security_p0.py` (7 tests passing).
+
+### 3.4 P1 — Real Model Provider Discovery
+- Probed live provider APIs (`models.list()`) where supported (OpenAI, DeepSeek, OpenRouter, Google).
+- Real latency measurement via `time.monotonic()` around provider calls.
+- Offline or unconfigured providers contribute zero selectable models.
+
+### 3.5 P1 — Real Multi-Agent Execution
+- Replaced simulated `think` steps in `_heuristic_planner` with real specialist tools:
+  - FORGE: `forge_coding`
+  - SENTINEL: security configuration audit
+  - ORACLE: `knowledge_search`
+  - SCOUT: repository context discovery
+  - VANGUARD: verified QA test execution
+  - PULSE: `n8n` automation operations
+  - ATLAS: executive planning and synthesis
+
+### 3.6 Verification Summary
+- `pytest tests/models tests/workforce tests/tools/test_n8n_security_p0.py tests/tools/test_n8n_integration.py`: 67 passed in 15.31s.
+- `vitest run --run`: 117 passed across 23 test files in 4.26s.
+- `npm run build`: built production client in 1.96s with zero errors.
+
+### 3.7 Un-Live-Tested Items
+- Live external webhook triggering on `https://n8n.kavlien.store` (requires third-party incoming HTTP triggers).
+- Live cloud API generation across cloud providers whose API keys are not locally configured in `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. (unconfigured providers safely contribute zero selectable models).
+

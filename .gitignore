@@ -48,6 +48,7 @@ Thumbs.db
 *.db
 *.jsonl
 *.npz
+.openjarvis_workspace.lock
 *.log
 results/
 logs/

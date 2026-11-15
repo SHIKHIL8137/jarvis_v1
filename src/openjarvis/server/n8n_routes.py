@@ -22,6 +22,7 @@ class WorkflowExecuteRequest(BaseModel):
 
 class WebhookTriggerRequest(BaseModel):
     data: Optional[Dict[str, Any]] = None
+    approval_id: Optional[str] = None
 
 
 @router.get("/status")
@@ -64,7 +65,6 @@ async def execute_n8n_workflow(workflow_id: str, req: WorkflowExecuteRequest) ->
         approval_id=req.approval_id,
     )
     if not res.success:
-        # Check if gated by approval
         if "approval" in res.content.lower():
             return {
                 "status": "waiting_approval",
@@ -82,10 +82,25 @@ async def execute_n8n_workflow(workflow_id: str, req: WorkflowExecuteRequest) ->
 
 @router.post("/webhooks/{webhook_path:path}")
 async def trigger_n8n_webhook(webhook_path: str, req: WebhookTriggerRequest) -> Dict[str, Any]:
-    """Trigger an n8n webhook slug or URL."""
-    client = get_n8n_client()
-    try:
-        res = client.trigger_webhook(webhook_path, data=req.data)
-        return {"status": "triggered", "webhook_path": webhook_path, "response": res}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Webhook trigger failed: {exc}")
+    """Trigger an n8n webhook slug or URL through strict approval gate."""
+    tool = N8nTool()
+    res = tool.execute(
+        action="trigger_webhook",
+        webhook_path=webhook_path,
+        payload=req.data or {},
+        approval_id=req.approval_id,
+    )
+    if not res.success:
+        if "approval" in res.content.lower():
+            return {
+                "status": "waiting_approval",
+                "message": res.content,
+                "webhook_path": webhook_path,
+            }
+        raise HTTPException(status_code=400, detail=res.content)
+
+    return {
+        "status": "triggered",
+        "webhook_path": webhook_path,
+        "result": res.content,
+    }

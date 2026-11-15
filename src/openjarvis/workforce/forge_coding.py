@@ -1,19 +1,20 @@
 """FORGE Coding Engine — seamlessly unites FORGE with Jarvis's native coding skills and OpenCode.
 
-Eliminates disconnected single-turn edits or competing agents by routing FORGE tasks
-through either the OpenCodeAgent (headless HTTP server) or the native GoalLoop
-(roles.build + roles.review + AGENTS.md instructions), guarded by workspace file locking
-and rigorous test verification.
+Guarded by cross-process file-system locking, git-snapshot diff containment,
+workspace path containment, and strict verification state transitions.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set
 
@@ -23,49 +24,106 @@ from openjarvis.workforce.registry import AgentWorkforceRegistry, get_workforce_
 logger = logging.getLogger(__name__)
 
 
-class WorkspaceLock:
-    """Thread-safe and process-safe workspace file locking to prevent concurrent modifications."""
+class VerificationStatus(str, Enum):
+    """Explicit verification state transitions."""
 
-    _global_lock = threading.RLock()
-    _locked_paths: Set[str] = set()
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_RUN = "not_run"
+    BLOCKED = "blocked"
+    INCONCLUSIVE = "inconclusive"
+
+
+class WorkspaceLock:
+    """Cross-process and thread-safe workspace locking to prevent concurrent file modifications."""
+
+    _thread_lock = threading.RLock()
+    _locked_dirs: Set[str] = set()
 
     @classmethod
     @contextmanager
     def acquire(cls, target_dir: Optional[str | Path] = None, files: Optional[List[str]] = None, timeout: float = 30.0) -> Iterator[None]:
-        """Acquire lock on workspace directory and target files."""
-        t0 = time.time()
+        """Acquire lock on workspace directory across both processes and threads."""
         base_dir = str(Path(target_dir or os.getcwd()).resolve())
-        keys_to_lock = {base_dir}
-        if files:
-            for f in files:
-                try:
-                    resolved = str(Path(f).resolve())
-                    keys_to_lock.add(resolved)
-                except Exception:
-                    pass
+        lock_file_path = Path(base_dir) / ".openjarvis_workspace.lock"
+        t0 = time.time()
 
-        acquired = False
+        # 1. Thread lock acquisition
+        acquired_thread = False
         while time.time() - t0 < timeout:
-            with cls._global_lock:
-                if not cls._locked_paths.intersection(keys_to_lock):
-                    cls._locked_paths.update(keys_to_lock)
-                    acquired = True
+            with cls._thread_lock:
+                if base_dir not in cls._locked_dirs:
+                    cls._locked_dirs.add(base_dir)
+                    acquired_thread = True
                     break
-            time.sleep(0.1)
+            time.sleep(0.05)
 
-        if not acquired:
-            logger.warning("WorkspaceLock timeout after %.1fs for %s", timeout, keys_to_lock)
-            raise TimeoutError(f"Could not acquire workspace file lock for {base_dir} within {timeout}s")
+        if not acquired_thread:
+            logger.warning("WorkspaceLock thread timeout after %.1fs for %s", timeout, base_dir)
+            raise TimeoutError(f"Could not acquire thread workspace lock for {base_dir} within {timeout}s")
 
+        # 2. Cross-process OS lock acquisition
+        fd = None
         try:
+            lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+            while time.time() - t0 < timeout:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        fd = os.open(str(lock_file_path), os.O_RDWR | os.O_CREAT)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        break
+                    else:
+                        import fcntl
+
+                        fd = os.open(str(lock_file_path), os.O_RDWR | os.O_CREAT)
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                except (BlockingIOError, PermissionError, OSError):
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except Exception:
+                            pass
+                        fd = None
+                    time.sleep(0.05)
+
+            if fd is None:
+                logger.warning("WorkspaceLock cross-process timeout after %.1fs for %s", timeout, lock_file_path)
+                raise TimeoutError(f"Could not acquire cross-process workspace file lock for {base_dir} within {timeout}s")
+
             yield
+
         finally:
-            with cls._global_lock:
-                cls._locked_paths.difference_update(keys_to_lock)
+            if fd is not None:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        try:
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        except Exception:
+                            pass
+                    else:
+                        import fcntl
+
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+            with cls._thread_lock:
+                cls._locked_dirs.discard(base_dir)
 
 
 class ForgeCodingEngine:
-    """Specialized engine for FORGE executing software engineering tasks."""
+    """Specialized engine for FORGE executing software engineering tasks with security containment."""
 
     def __init__(self, registry: Optional[AgentWorkforceRegistry] = None) -> None:
         self.registry = registry or get_workforce_registry()
@@ -79,12 +137,18 @@ class ForgeCodingEngine:
         use_opencode: Optional[bool] = None,
         verification_cmd: Optional[str] = None,
         max_rounds: int = 6,
+        model: Optional[str] = None,
     ) -> AgentReport:
         """Execute a coding objective through OpenCode or native GoalLoop with full verification."""
-        from openjarvis.agents.opencode import is_opencode_available, OpenCodeAgent
+        from openjarvis.agents.opencode import OpenCodeAgent, is_opencode_available
         from openjarvis.models import get_model_selection_engine
 
         target_workdir = Path(workdir or os.getcwd()).resolve()
+
+        # Enforce workspace directory existence
+        if not target_workdir.is_dir():
+            target_workdir.mkdir(parents=True, exist_ok=True)
+
         logger.info("FORGE initiating coding task for task_id=%s, workdir=%s", task_id, target_workdir)
 
         # 1. Update FORGE state to BUSY
@@ -104,15 +168,19 @@ class ForgeCodingEngine:
         confidence: float = 0.95
         suggested_next_action: Optional[str] = None
 
-        # 2. Hardware-aware dynamic model selection for coding
-        sel_engine = get_model_selection_engine()
-        sel = sel_engine.select_model(task_type="coding", agent_id="forge")
-        coding_model = sel.model_name
+        # 2. Dynamic model selection for coding or use explicit allocated model
+        if model:
+            coding_model = model
+        else:
+            sel_engine = get_model_selection_engine()
+            sel = sel_engine.select_model(task_type="coding", agent_id="forge")
+            coding_model = sel.model_name
         self.registry.record_heartbeat("forge", current_task_id=task_id, active_model=coding_model)
 
         with WorkspaceLock.acquire(target_dir=target_workdir):
-            # Record initial git status
-            initial_files = self._get_modified_git_files(target_workdir)
+            # Record initial baseline snapshot before active execution to ignore pre-existing dirty files
+            initial_git_files = self._get_modified_git_files(target_workdir)
+            initial_dir_snapshot = self._take_dir_snapshot(target_workdir)
 
             # Determine whether to use OpenCode or native GoalLoop
             opencode_usable = is_opencode_available() if use_opencode is None else (use_opencode and is_opencode_available())
@@ -121,8 +189,9 @@ class ForgeCodingEngine:
             if opencode_usable:
                 try:
                     logger.info("FORGE executing via OpenCodeAgent with model %s", coding_model)
-                    from openjarvis.engine._discovery import get_engine
                     from openjarvis.core.config import load_config
+                    from openjarvis.engine._discovery import get_engine
+
                     cfg = load_config()
                     engine_tuple = get_engine(cfg, model=coding_model)
                     inner_engine = engine_tuple[1] if engine_tuple else None
@@ -134,6 +203,7 @@ class ForgeCodingEngine:
                             workspace=str(target_workdir),
                         )
                         from openjarvis.agents._stubs import AgentContext
+
                         ctx = AgentContext()
                         res = agent.run(objective, context=ctx)
                         work_performed = res.content or "Completed OpenCode coding session"
@@ -179,12 +249,13 @@ class ForgeCodingEngine:
                     work_performed = f"Goal execution failed: {goal_err}"
                     confidence = 0.2
 
-            # 3. Detect file changes
-            current_files = self._get_modified_git_files(target_workdir)
-            files_changed = sorted(list(current_files.union(set(current_files - initial_files))))
-            if not files_changed:
-                # Check recent file timestamps if git not available or nothing committed
-                files_changed = self._scan_recent_modified_files(target_workdir)
+            # 3. Detect file changes: ONLY report files modified introduced by THIS active task
+            # Strict set difference ignoring pre-existing dirty files
+            current_git_files = self._get_modified_git_files(target_workdir)
+            if current_git_files or initial_git_files:
+                files_changed = sorted(list(current_git_files - initial_git_files))
+            else:
+                files_changed = self._diff_dir_snapshot(target_workdir, initial_dir_snapshot)
 
             # 4. Run test verification
             if verification_cmd:
@@ -195,7 +266,6 @@ class ForgeCodingEngine:
                     errors.append(f"Verification test failed: {test_result.get('output', '')[:300]}")
                     confidence = max(0.3, confidence - 0.4)
             else:
-                # Automatic verification: look for pytest or npm test if appropriate
                 auto_test = self._auto_verify_tests(target_workdir)
                 if auto_test:
                     tests_executed.append(auto_test)
@@ -203,18 +273,37 @@ class ForgeCodingEngine:
                         errors.append(f"Auto-test verification failed: {auto_test.get('output', '')[:300]}")
                         confidence = max(0.4, confidence - 0.3)
 
-            # 5. Reviewer assessment
+            # 5. Calculate explicit verification state: NEVER report success if no tests were executed
+            if not tests_executed:
+                verification_status = VerificationStatus.NOT_RUN.value
+                verified = False
+            elif any(t.get("status") == "blocked" for t in tests_executed):
+                verification_status = VerificationStatus.BLOCKED.value
+                verified = False
+            elif all(t.get("passed", False) for t in tests_executed):
+                verification_status = VerificationStatus.PASSED.value
+                verified = True
+            else:
+                verification_status = VerificationStatus.FAILED.value
+                verified = False
+
+            # 6. Reviewer assessment
             findings.append({
                 "type": "code_summary",
                 "engine_used": used_engine,
                 "model": coding_model,
                 "files_changed_count": len(files_changed),
-                "tests_passed": all(t.get("passed", False) for t in tests_executed) if tests_executed else True,
+                "verification_status": verification_status,
+                "tests_passed": verified,
             })
 
-            suggested_next_action = "Review diff and proceed to Vanguard acceptance validation" if not errors else "Inspect failure logs and retry"
+            suggested_next_action = (
+                "Review diff and proceed to Vanguard acceptance validation"
+                if verified and not errors
+                else "Inspect failure logs and resolve test/security issues"
+            )
 
-        # 6. Build structured AgentReport
+        # 7. Build structured AgentReport
         report = AgentReport(
             agent_id="forge",
             task_id=task_id,
@@ -229,17 +318,18 @@ class ForgeCodingEngine:
                 "engine": used_engine,
                 "model": coding_model,
                 "files_changed": files_changed,
-                "verified": all(t.get("passed", False) for t in tests_executed) if tests_executed else True,
+                "verification_status": verification_status,
+                "verified": verified,
             },
             errors=errors,
-            remaining_work=None if not errors else "Resolve verification test failures",
+            remaining_work=None if (verified and not errors) else "Resolve verification test failures",
             confidence=confidence,
             suggested_next_action=suggested_next_action,
         )
 
-        # 7. Record report & restore state
+        # 8. Record report & restore state
         self.registry.store.save_report(report)
-        final_state = AgentRuntimeState.IDLE if not errors else AgentRuntimeState.DEGRADED
+        final_state = AgentRuntimeState.IDLE if (verified and not errors) else AgentRuntimeState.DEGRADED
         self.registry.set_agent_state("forge", final_state, error="; ".join(errors) if errors else None)
 
         return report
@@ -259,44 +349,80 @@ class ForgeCodingEngine:
                 for line in res.stdout.splitlines():
                     parts = line.strip().split(maxsplit=1)
                     if len(parts) == 2:
-                        modified.add(parts[1])
+                        modified.add(parts[1].strip().strip('"'))
         except Exception as exc:
             logger.debug("git status check failed: %s", exc)
         return modified
 
-    def _scan_recent_modified_files(self, workdir: Path, threshold_seconds: float = 300.0) -> List[str]:
-        """Scan directory for files modified within threshold_seconds."""
-        recent = []
-        now = time.time()
+    def _take_dir_snapshot(self, workdir: Path) -> Dict[str, float]:
+        """Take baseline snapshot of file mtimes within workdir."""
+        snapshot: Dict[str, float] = {}
         for root, dirs, files in os.walk(str(workdir)):
-            if any(p in root for p in [".git", "node_modules", ".venv", "__pycache__"]):
+            if any(p in root for p in [".git", "node_modules", ".venv", "__pycache__", ".openjarvis_workspace.lock"]):
                 continue
             for f in files:
                 p = Path(root) / f
                 try:
-                    mtime = p.stat().st_mtime
-                    if now - mtime <= threshold_seconds:
-                        rel = str(p.relative_to(workdir))
-                        recent.append(rel)
+                    snapshot[str(p.relative_to(workdir))] = p.stat().st_mtime
                 except Exception:
                     pass
-        return recent[:20]
+        return snapshot
+
+    def _diff_dir_snapshot(self, workdir: Path, baseline: Dict[str, float]) -> List[str]:
+        """Return files added or modified strictly after the baseline snapshot."""
+        changed: List[str] = []
+        current = self._take_dir_snapshot(workdir)
+        for rel_path, mtime in current.items():
+            if rel_path not in baseline or mtime > baseline[rel_path] + 0.001:
+                changed.append(rel_path)
+        return sorted(changed)
 
     def _run_command(self, cmd: str, cwd: str) -> Dict[str, Any]:
-        """Run a verification command and record results."""
+        """Run a verification command safely within workspace boundary. Block traversal and injection."""
         t0 = time.time()
+        resolved_cwd = Path(cwd).resolve()
+
+        # Enforce workspace containment and security boundary
+        clean_cmd = cmd.strip()
+        if ".." in clean_cmd or "/etc/" in clean_cmd or "\\Windows\\" in clean_cmd:
+            for token in clean_cmd.split():
+                if token.startswith("..") or "/.." in token or "\\.." in token:
+                    return {
+                        "command": cmd,
+                        "passed": False,
+                        "status": "blocked",
+                        "exit_code": -1,
+                        "duration_seconds": 0.0,
+                        "output": f"Security boundary violation: path traversal not permitted in command '{cmd}'",
+                    }
+
+        # Block dangerous destructive shell commands
+        dangerous = ["rm -rf /", "mkfs", "format ", "del /s /q c:", ":(){ :|:& };:"]
+        if any(d in clean_cmd.lower() for d in dangerous):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "blocked",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: destructive shell command blocked: '{cmd}'",
+            }
+
         try:
+            use_shell = sys.platform == "win32"
             proc = subprocess.run(
-                cmd,
-                cwd=cwd,
-                shell=True,
+                clean_cmd,
+                cwd=str(resolved_cwd),
+                shell=use_shell,
                 capture_output=True,
                 text=True,
                 timeout=120.0,
             )
+            passed = (proc.returncode == 0)
             return {
                 "command": cmd,
-                "passed": proc.returncode == 0,
+                "passed": passed,
+                "status": "passed" if passed else "failed",
                 "exit_code": proc.returncode,
                 "duration_seconds": round(time.time() - t0, 2),
                 "output": (proc.stdout + "\n" + proc.stderr).strip()[-2000:],
@@ -305,6 +431,7 @@ class ForgeCodingEngine:
             return {
                 "command": cmd,
                 "passed": False,
+                "status": "failed",
                 "exit_code": -1,
                 "duration_seconds": round(time.time() - t0, 2),
                 "output": "Command timed out after 120s",
@@ -313,6 +440,7 @@ class ForgeCodingEngine:
             return {
                 "command": cmd,
                 "passed": False,
+                "status": "failed",
                 "exit_code": -1,
                 "duration_seconds": round(time.time() - t0, 2),
                 "output": str(exc),
@@ -320,11 +448,9 @@ class ForgeCodingEngine:
 
     def _auto_verify_tests(self, workdir: Path) -> Optional[Dict[str, Any]]:
         """Attempt best-effort test verification if test files are present."""
-        # Check for pytest / python tests
         if (workdir / "pytest.ini").exists() or (workdir / "tests").is_dir():
             cmd = "pytest tests/ -q --tb=short"
             return self._run_command(cmd, cwd=str(workdir))
-        # Check for npm test
         if (workdir / "package.json").exists():
             return self._run_command("npm test -- --watch=false", cwd=str(workdir))
         return None
@@ -333,7 +459,6 @@ class ForgeCodingEngine:
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
-import json
 
 
 @ToolRegistry.register("forge_coding")
@@ -356,45 +481,42 @@ class ForgeCodingTool(BaseTool):
                     },
                     "workdir": {
                         "type": "string",
-                        "description": "Optional repository or project directory.",
-                    },
-                    "use_opencode": {
-                        "type": "boolean",
-                        "description": "Whether to prefer OpenCode server if available (default true).",
+                        "description": "Target workspace directory path.",
                     },
                     "verification_cmd": {
                         "type": "string",
-                        "description": "Optional custom test or verification shell command.",
+                        "description": "Optional test verification command (e.g. 'pytest tests/').",
+                    },
+                    "use_opencode": {
+                        "type": "boolean",
+                        "description": "Whether to use OpenCode if available, or native GoalLoop.",
                     },
                 },
                 "required": ["objective"],
             },
-            category="coding",
+            category="development",
             cost_estimate=0.0,
-            latency_estimate=5.0,
+            latency_estimate=10.0,
         )
 
     def execute(self, **params: Any) -> ToolResult:
-        objective = str(params.get("objective", "")).strip()
+        objective = params.get("objective", "")
         if not objective:
-            return ToolResult(tool_name="forge_coding", content="Coding objective is required", success=False)
-
+            return ToolResult(tool_name="forge_coding", content="objective is required for forge_coding", success=False)
         workdir = params.get("workdir")
-        use_opencode = params.get("use_opencode")
         verification_cmd = params.get("verification_cmd")
+        use_opencode = params.get("use_opencode")
 
         engine = ForgeCodingEngine()
         report = engine.execute_coding_task(
-            task_id=f"coding-{int(time.time())}",
+            task_id=f"tool-{int(time.time())}",
             objective=objective,
             workdir=workdir,
-            use_opencode=use_opencode,
             verification_cmd=verification_cmd,
+            use_opencode=use_opencode,
         )
-
         return ToolResult(
             tool_name="forge_coding",
             content=json.dumps(report.to_dict(), indent=2),
-            success=not report.errors,
+            success=report.results.get("verified", False) and not report.errors,
         )
-

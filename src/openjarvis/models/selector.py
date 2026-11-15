@@ -1,17 +1,21 @@
 """Intelligent Model Selection Engine — task-based capability scoring, hardware-aware allocation,
-shared model pooling, and dynamic fallback."""
+shared model pooling, fail-closed privacy, and dynamic fallback.
+"""
 
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from openjarvis.core.config import JarvisConfig, detect_hardware, load_config
 from openjarvis.models.capabilities import (
+    CapabilityProvenance,
     ModelCapabilityInfo,
     ModelPolicy,
+    NoCompatibleModelAvailable,
+    NoCompatibleModelAvailableResult,
     SelectionResult,
     TaskType,
 )
@@ -19,10 +23,21 @@ from openjarvis.models.discovery import ModelDiscoveryEngine, get_model_discover
 
 logger = logging.getLogger(__name__)
 
+# Canonical mapping from agent identifiers to normalized task categories
+AGENT_TO_TASK_MAP: Dict[str, str] = {
+    "atlas": TaskType.PLANNING.value,
+    "forge": TaskType.CODING.value,
+    "oracle": TaskType.RESEARCH.value,
+    "sentinel": TaskType.SECURITY.value,
+    "scout": TaskType.GENERAL.value,
+    "vanguard": TaskType.VERIFICATION.value,
+    "pulse": TaskType.OPERATIONS.value,
+}
+
 
 class ModelSelectionEngine:
     """Selects the optimal model dynamically per task or execution step, respecting
-    hardware boundaries (NVIDIA GTX 1650 4 GB VRAM) and configured privacy policies."""
+    hardware boundaries, capability provenance, and configured privacy policies."""
 
     _instance: Optional[ModelSelectionEngine] = None
     _instance_lock = threading.Lock()
@@ -38,10 +53,34 @@ class ModelSelectionEngine:
         self.policy = default_policy
         self._lock = threading.RLock()
         self._active_local_inferences: int = 0
-        self._max_concurrent_local: int = 2  # GTX 1650 constraint
         self._currently_loaded_local_model: Optional[str] = None
         self._failure_history: List[Dict[str, Any]] = []
+
+        # Hardware-aware resource constraints detected dynamically
         self._hardware = detect_hardware()
+        gpu_vram = self._hardware.gpu.vram_gb if self._hardware.gpu else 0.0
+        if gpu_vram > 0:
+            self._vram_limit_mb: int = int(gpu_vram * 1024 * 0.85)
+            if gpu_vram >= 16.0:
+                self._max_concurrent_local: int = 4
+            elif gpu_vram >= 8.0:
+                self._max_concurrent_local: int = 3
+            elif gpu_vram >= 4.0:
+                self._max_concurrent_local: int = 2
+            else:
+                self._max_concurrent_local: int = 1
+        else:
+            # CPU mode
+            self._vram_limit_mb: int = 0
+            self._max_concurrent_local: int = 1
+
+    @property
+    def vram_limit_mb(self) -> int:
+        return self._vram_limit_mb
+
+    @vram_limit_mb.setter
+    def vram_limit_mb(self, val: int) -> None:
+        self._vram_limit_mb = val
 
     @property
     def _active_inferences(self) -> int:
@@ -72,59 +111,77 @@ class ModelSelectionEngine:
 
     def select_model(
         self,
-        task_type: str | TaskType,
+        task_type: str | TaskType = TaskType.GENERAL,
         required_capabilities: Optional[List[str]] = None,
         local_only: bool = False,
         preferred_model: Optional[str] = None,
         fallback_model: Optional[str] = None,
         min_context_tokens: int = 4096,
         agent_id: Optional[str] = None,
+        requires_tools: bool = False,
+        requires_vision: bool = False,
+        requires_reasoning: bool = False,
+        max_cost_per_m: Optional[float] = None,
+        raise_on_none: bool = False,
     ) -> SelectionResult:
         """Dynamically select the optimal available model based on capability requirements,
-        system hardware, and operational policy."""
+        system hardware, and operational policy. Zero hardcoded emergency fallbacks."""
         with self._lock:
-            # 1. Normalize task type
-            t_str = task_type.value if isinstance(task_type, TaskType) else str(task_type).lower()
-            req_caps = set(required_capabilities or [])
+            # 1. Normalize task type: map agent IDs to standardized task types
+            raw_task = task_type.value if isinstance(task_type, TaskType) else str(task_type).lower().strip()
+            t_str = AGENT_TO_TASK_MAP.get(raw_task, raw_task)
 
-            # 2. Query available models
+            # Map agent_id to task type if task_type was general and agent_id provided
+            if t_str == TaskType.GENERAL.value and agent_id:
+                norm_agent = agent_id.lower().strip()
+                t_str = AGENT_TO_TASK_MAP.get(norm_agent, t_str)
+
+            # Collect required capabilities
+            req_caps = set(required_capabilities or [])
+            if requires_tools:
+                req_caps.add("tools")
+            if requires_vision:
+                req_caps.add("vision")
+            if requires_reasoning:
+                req_caps.add("reasoning")
+
+            # 2. Query discovered models
             all_models = (
                 self.discovery.get_all_models()
                 if hasattr(self.discovery, "get_all_models")
                 else self.discovery.discover_all()
             )
-            if not all_models:
-                # Emergency fallback if discovery returned empty
-                return SelectionResult(
-                    model_id="qwen3:4b-instruct",
-                    provider="local-emergency",
-                    task_type=t_str,
-                    reason="No models currently discovered; using default local candidate",
-                    policy=self.policy.value,
-                    is_local=True,
-                    context_length=8192,
-                    score=0.0,
-                    hardware_notes="Discovery returned empty list",
-                )
 
-            # 3. Filter eligible models
+            is_privacy_strict = local_only or (self.policy == ModelPolicy.PRIVACY_FIRST)
+
+            if not all_models:
+                msg = "No models currently discovered across configured providers."
+                if raise_on_none:
+                    raise NoCompatibleModelAvailable(msg, task_type=t_str, policy=self.policy.value)
+                return NoCompatibleModelAvailableResult(message=msg, task_type=t_str, policy=self.policy.value)
+
+            # 3. Filter eligible models with strict capability verification
             candidates = self._filter_candidates(
                 all_models=all_models,
                 task_type=t_str,
                 required_capabilities=req_caps,
-                local_only=local_only or (self.policy == ModelPolicy.PRIVACY_FIRST),
+                local_only=is_privacy_strict,
                 min_context_tokens=min_context_tokens,
+                max_cost_per_m=max_cost_per_m,
             )
 
-            # 4. If preferred model is specified, check if it is available and capable
+            # 4. If preferred model is specified, verify it is available, healthy, and meets constraints
             if preferred_model:
                 for c in candidates:
-                    if c.model_id.lower() == preferred_model.lower() or c.display_name.lower() == preferred_model.lower():
+                    if (
+                        c.model_id.lower() == preferred_model.lower()
+                        or c.display_name.lower() == preferred_model.lower()
+                    ):
                         return SelectionResult(
                             model_id=c.model_id,
                             provider=c.provider,
                             task_type=t_str,
-                            reason=f"User-preferred model '{preferred_model}' is available and meets task requirements",
+                            reason=f"User-preferred model '{preferred_model}' is verified available and meets task requirements",
                             policy=self.policy.value,
                             is_local=c.is_local,
                             context_length=c.context_length,
@@ -133,55 +190,39 @@ class ModelSelectionEngine:
                             hardware_notes=self._format_hardware_notes(c),
                         )
 
-            # 5. If no candidates match strict constraints, fall back gracefully
+            # 5. Handle empty candidate list (fail-closed behavior)
             if not candidates:
-                if local_only or self.policy == ModelPolicy.PRIVACY_FIRST:
-                    # Look for any healthy local model
-                    local_candidates = [m for m in all_models if m.is_local and m.health_status == "healthy"]
-                    if local_candidates:
-                        best_local = local_candidates[0]
-                        return SelectionResult(
-                            model_id=best_local.model_id,
-                            provider=best_local.provider,
-                            task_type=t_str,
-                            reason=f"Selected best available local model under strict privacy policy (capabilities partial)",
-                            policy=self.policy.value,
-                            is_local=True,
-                            context_length=best_local.context_length,
-                            score=40.0,
-                            hardware_notes=self._format_hardware_notes(best_local),
-                        )
+                if is_privacy_strict:
+                    # Privacy-first policy MUST fail closed. NEVER fall through to a cloud model.
+                    msg = (
+                        "Privacy-first policy enforced (fail-closed): no healthy local model satisfies "
+                        f"the required constraints for task '{t_str}' (required capabilities: {sorted(list(req_caps))})."
+                    )
+                    logger.warning(msg)
+                    if raise_on_none:
+                        raise NoCompatibleModelAvailable(msg, task_type=t_str, policy=self.policy.value)
+                    return NoCompatibleModelAvailableResult(message=msg, task_type=t_str, policy=self.policy.value)
 
-                # Fall back to best general healthy model
-                healthy = [m for m in all_models if m.health_status == "healthy"]
-                if healthy:
-                    candidates = healthy
+                msg = (
+                    f"No compatible model available satisfying required capabilities {sorted(list(req_caps))} "
+                    f"and constraints for task '{t_str}'."
+                )
+                logger.warning(msg)
+                if raise_on_none:
+                    raise NoCompatibleModelAvailable(msg, task_type=t_str, policy=self.policy.value)
+                return NoCompatibleModelAvailableResult(message=msg, task_type=t_str, policy=self.policy.value)
 
-            # 6. Score candidates
-            scored = []
+            # 6. Score candidate models
+            scored: List[Tuple[float, ModelCapabilityInfo, str]] = []
             for c in candidates:
                 score, reason = self._score_model(c, t_str, req_caps)
                 scored.append((score, c, reason))
 
             scored.sort(key=lambda x: x[0], reverse=True)
-            if not scored:
-                fallback = all_models[0]
-                return SelectionResult(
-                    model_id=fallback.model_id,
-                    provider=fallback.provider,
-                    task_type=t_str,
-                    reason="Fallback to best available model",
-                    policy=self.policy.value,
-                    is_local=fallback.is_local,
-                    context_length=fallback.context_length,
-                    score=20.0,
-                    hardware_notes="No candidate met strict criteria",
-                )
-
             best_score, best_model, best_reason = scored[0]
             alternatives = [m.model_id for _, m, _ in scored[1:4]]
 
-            # Update loaded model tracking
+            # Update loaded local model tracking
             if best_model.is_local:
                 self._currently_loaded_local_model = best_model.model_id
 
@@ -216,29 +257,50 @@ class ModelSelectionEngine:
         required_capabilities: Set[str],
         local_only: bool,
         min_context_tokens: int,
+        max_cost_per_m: Optional[float] = None,
     ) -> List[ModelCapabilityInfo]:
         filtered: List[ModelCapabilityInfo] = []
 
         for m in all_models:
+            # 1. Health check: model must be healthy and reachable
             if m.health_status != "healthy":
                 continue
 
+            # 2. Strict privacy / local boundary check
             if local_only and not m.is_local:
                 continue
 
+            # 3. Context length boundary
             if m.context_length < min_context_tokens:
                 continue
 
-            # Task specific mandatory filters
-            if task_type == "vision" and not m.supports_vision:
+            # 4. Cost constraint
+            if max_cost_per_m is not None and not m.is_free:
+                if m.price_per_m_out > max_cost_per_m:
+                    continue
+
+            # 5. Strict capability enforcement: every required capability must be supported
+            # Unknown capability provenance is NEVER treated as confirmed support
+            missing_cap = False
+            for req in required_capabilities:
+                if not m.has_capability(req, allow_inferred=True):
+                    missing_cap = True
+                    break
+            if missing_cap:
                 continue
 
-            # Hardware boundary: reject local models exceeding 4 GB VRAM budget on GTX 1650
-            if m.is_local and m.vram_mb_required > 3800:
+            # 6. Task specific mandatory capabilities
+            if task_type == "vision" and not m.has_capability("vision"):
+                continue
+            if task_type == "coding" and not (m.has_capability("coding") or m.has_capability("tools")):
                 continue
 
-            # Hardware concurrency gate: overflow to cloud when local slots are full (unless local_only requested)
-            if m.is_local and not local_only and self._active_inferences >= self.max_concurrent_inferences:
+            # 7. Hardware boundary: reject local models exceeding GPU VRAM budget
+            if m.is_local and self._vram_limit_mb > 0 and m.vram_mb_required > self._vram_limit_mb:
+                continue
+
+            # 8. Hardware concurrency gate: overflow to cloud when local slots are full (unless privacy-strict)
+            if m.is_local and not local_only and self._active_local_inferences >= self._max_concurrent_local:
                 continue
 
             filtered.append(m)
@@ -336,9 +398,10 @@ class ModelSelectionEngine:
         error: str,
         task_type: str,
         context: Optional[Dict[str, Any]] = None,
+        raise_on_none: bool = False,
     ) -> SelectionResult:
         """Handle runtime failure of a model by logging the failure, degrading its health,
-        and dynamically allocating an alternative candidate."""
+        and dynamically allocating an alternative candidate. Zero hardcoded fallbacks."""
         with self._lock:
             logger.warning("Model '%s' failed during task '%s': %s", failed_model_id, task_type, error)
             self._failure_history.append({
@@ -355,8 +418,18 @@ class ModelSelectionEngine:
                 failed_info.error_message = error
 
             # Re-select alternative excluding the failed model
-            all_models = self.discovery.discover_all()
-            eligible = [m for m in all_models if m.model_id != failed_model_id and m.health_status == "healthy"]
+            all_models = (
+                self.discovery.get_all_models()
+                if hasattr(self.discovery, "get_all_models")
+                else self.discovery.discover_all()
+            )
+            is_privacy_strict = (self.policy == ModelPolicy.PRIVACY_FIRST)
+            eligible = [
+                m for m in all_models
+                if m.model_id != failed_model_id
+                and m.health_status == "healthy"
+                and (not is_privacy_strict or m.is_local)
+            ]
 
             if eligible:
                 scored = []
@@ -379,24 +452,21 @@ class ModelSelectionEngine:
                     hardware_notes=f"Safely rerouted following failure of {failed_model_id}",
                 )
 
-            # Fallback to local default if nothing else eligible
-            return SelectionResult(
-                model_id="qwen3:4b-instruct",
-                provider="vllm",
-                task_type=task_type,
-                reason=f"Emergency fallback to local default after {failed_model_id} failure",
-                policy=self.policy.value,
-                is_local=True,
-                context_length=8192,
-                score=10.0,
-                hardware_notes="No alternative healthy models available",
-            )
+            # No alternative healthy models available: return explicit failure, never invent model ID
+            msg = f"No compatible alternative healthy model available after failure of '{failed_model_id}'."
+            if raise_on_none:
+                raise NoCompatibleModelAvailable(msg, task_type=task_type, policy=self.policy.value)
+            return NoCompatibleModelAvailableResult(message=msg, task_type=task_type, policy=self.policy.value)
 
     def _format_hardware_notes(self, model: ModelCapabilityInfo) -> str:
         if model.is_local:
             gpu_name = self._hardware.gpu.name if self._hardware.gpu else "Integrated/CPU"
             vram_gb = self._hardware.gpu.vram_gb if self._hardware.gpu else 0.0
-            return f"Local inference on {gpu_name} ({vram_gb} GB VRAM). Estimated model memory: {model.vram_mb_required} MB."
+            return (
+                f"Local inference on {gpu_name} ({vram_gb} GB VRAM). "
+                f"Estimated model memory: {model.vram_mb_required} MB. "
+                f"Hardware budget: {self._vram_limit_mb} MB."
+            )
         return "Cloud API inference. Zero local GPU VRAM utilized."
 
 

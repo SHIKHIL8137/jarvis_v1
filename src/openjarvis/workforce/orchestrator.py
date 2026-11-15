@@ -148,25 +148,25 @@ class AtlasOrchestrator:
                     "step_id": "step-2",
                     "step_number": 2,
                     "title": "Software Architecture & Bug Analysis",
-                    "description": "Analyze code quality, performance bottlenecks, and potential bugs",
+                    "description": f"Analyze code quality, performance bottlenecks, and potential bugs for: {user_request}",
                     "assigned_agent": "forge",
                     "dependencies": ["step-1"],
-                    "tool_name": "think",
-                    "tool_params": {"thought": f"Analyzing architecture and bugs for: {user_request}"},
-                    "expected_output": "Bug findings and architecture review",
-                    "verification_criteria": "Identified potential defects or bottlenecks",
+                    "tool_name": "forge_coding",
+                    "tool_params": {"objective": f"Architecture analysis and defect identification for: {user_request}", "workdir": "."},
+                    "expected_output": "Bug findings, architectural analysis, and proposed fixes",
+                    "verification_criteria": "Identified potential defects or bottlenecks with code evidence",
                 },
                 {
                     "step_id": "step-3",
                     "step_number": 3,
                     "title": "Security & Dependency Posture Audit",
-                    "description": "Scan security configuration, access boundaries, and vulnerability posture",
+                    "description": f"Scan security configuration, access boundaries, and vulnerability posture for: {user_request}",
                     "assigned_agent": "sentinel",
                     "dependencies": ["step-1"],
-                    "tool_name": "think",
-                    "tool_params": {"thought": f"Assessing security boundaries and risk for: {user_request}"},
-                    "expected_output": "Security vulnerability analysis",
-                    "verification_criteria": "Security posture documented",
+                    "tool_name": "file_read",
+                    "tool_params": {"path": "pyproject.toml"},
+                    "expected_output": "Security configuration and dependency posture analysis",
+                    "verification_criteria": "Security posture and boundaries documented",
                 },
                 {
                     "step_id": "step-4",
@@ -184,13 +184,13 @@ class AtlasOrchestrator:
                     "step_id": "step-5",
                     "step_number": 5,
                     "title": "QA & Evidence Verification",
-                    "description": "Verify code findings, check claims, and test assumptions",
+                    "description": "Verify code findings, check claims, and run test verification suite",
                     "assigned_agent": "vanguard",
                     "dependencies": ["step-2", "step-3", "step-4"],
-                    "tool_name": "think",
-                    "tool_params": {"thought": "Verifying evidence and cross-checking findings across Forge, Sentinel, and Oracle"},
-                    "expected_output": "QA verification report with verified claims",
-                    "verification_criteria": "All claims checked against source evidence",
+                    "tool_name": "forge_coding",
+                    "tool_params": {"objective": f"Verify QA evidence and test suite for: {user_request}", "verification_cmd": "pytest tests/ -q --tb=short"},
+                    "expected_output": "QA verification report with verified claims and test results",
+                    "verification_criteria": "All claims checked against source evidence and test executions",
                 },
             ]
 
@@ -299,10 +299,18 @@ class AtlasOrchestrator:
 
         return steps
 
-    def execute_step_safely(self, step: TaskStep, task_id: str = "task-default") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """Standard executor routing to appropriate specialist runtime or tool."""
+    def execute_step_safely(
+        self,
+        step: TaskStep,
+        task_id: str = "task-default",
+        model: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Standard executor routing to appropriate specialist runtime or tool with allocated model."""
+        allocated_model = model or step.tool_params.get("model") or step.tool_params.get("_allocated_model")
+
         if step.assigned_agent == "forge" and step.tool_name in ("forge_coding", "code_goal", "coding", "code_interpreter"):
             from openjarvis.workforce.forge_coding import ForgeCodingEngine
+
             engine = ForgeCodingEngine(registry=self.registry)
             report = engine.execute_coding_task(
                 task_id=task_id,
@@ -310,12 +318,14 @@ class AtlasOrchestrator:
                 objective=step.description or step.title,
                 workdir=step.tool_params.get("workdir"),
                 verification_cmd=step.tool_params.get("verification_cmd"),
+                model=allocated_model,
             )
             if report.errors:
                 return report.to_dict(), "; ".join(report.errors)
             return report.to_dict(), None
 
         from openjarvis.core.registry import ToolRegistry
+
         if not ToolRegistry.contains(step.tool_name):
             if step.tool_name == "think":
                 return {"result": step.tool_params.get("thought", "Analyzed")}, None
@@ -324,7 +334,10 @@ class AtlasOrchestrator:
         try:
             tool_cls = ToolRegistry.get(step.tool_name)
             tool_inst = tool_cls() if callable(tool_cls) else tool_cls
-            res = tool_inst.execute(**step.tool_params)
+            params = dict(step.tool_params)
+            # Clean internal orchestration hints before tool execution
+            params.pop("_allocated_model", None)
+            res = tool_inst.execute(**params)
             if hasattr(res, "success") and not res.success:
                 return None, str(getattr(res, "content", "Execution failed"))
             content = getattr(res, "content", str(res))
@@ -337,13 +350,12 @@ class AtlasOrchestrator:
         task_id: str,
         user_request: str,
         steps: List[TaskStep],
-        step_executor: Optional[Callable[[TaskStep], Tuple[Optional[Dict[str, Any]], Optional[str]]]] = None,
+        step_executor: Optional[Callable[..., Tuple[Optional[Dict[str, Any]], Optional[str]]]] = None,
     ) -> Dict[str, Any]:
-        """Execute task steps according to DAG dependencies with bounded concurrency."""
+        """Execute task steps according to DAG dependencies with bounded concurrency and model routing."""
         completed_step_ids: Set[str] = set()
         agent_reports: List[AgentReport] = []
         start_time = time.time()
-        actual_executor = step_executor or (lambda s: self.execute_step_safely(s, task_id=task_id))
 
         # Step lookup
         steps_by_id = {s.step_id: s for s in steps}
@@ -375,14 +387,27 @@ class AtlasOrchestrator:
                     step.started_at = time.time()
                     try:
                         from openjarvis.models import get_model_selection_engine
+                        from openjarvis.models.selector import AGENT_TO_TASK_MAP
 
+                        norm_task_type = AGENT_TO_TASK_MAP.get(step.assigned_agent, step.assigned_agent)
                         sel_engine = get_model_selection_engine()
-                        sel = sel_engine.select_model(task_type=step.assigned_agent, agent_id=step.assigned_agent)
+                        sel = sel_engine.select_model(task_type=norm_task_type, agent_id=step.assigned_agent)
                         step_model = sel.model_id
                     except Exception:
                         step_model = "auto"
+
                     self.registry.record_heartbeat(step.assigned_agent, current_task_id=task_id, active_model=step_model)
-                    futures[executor.submit(actual_executor, step)] = step
+                    step.tool_params["_allocated_model"] = step_model
+
+                    def run_step(s=step, m=step_model):
+                        if step_executor:
+                            try:
+                                return step_executor(s, m)
+                            except TypeError:
+                                return step_executor(s)
+                        return self.execute_step_safely(s, task_id=task_id, model=m)
+
+                    futures[executor.submit(run_step)] = step
 
                 for future in concurrent.futures.as_completed(futures):
                     step = futures[future]

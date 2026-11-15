@@ -35,6 +35,25 @@ class ModelPolicy(str, Enum):
     PRIVACY_FIRST = "privacy-first"
 
 
+class CapabilityProvenance(str, Enum):
+    """Origin and confidence level of a model capability declaration."""
+
+    CONFIRMED = "confirmed"  # Verified via live benchmark, test call, or runtime validation
+    PROVIDER_DECLARED = "provider_declared"  # Declared directly by provider model endpoint/card
+    INFERRED = "inferred"  # Inferred through architecture/naming heuristics (e.g. 'coder', 'r1')
+    UNKNOWN = "unknown"  # Unverified or unsupported; must never be assumed supported
+
+
+class NoCompatibleModelAvailable(Exception):
+    """Raised when no discovered model satisfies task constraints, privacy policies, or hardware budgets."""
+
+    def __init__(self, message: str = "No compatible model available", task_type: str = "general", policy: str = "balanced") -> None:
+        super().__init__(message)
+        self.message = message
+        self.task_type = task_type
+        self.policy = policy
+
+
 @dataclass
 class ModelCapabilityInfo:
     """Standardized representation of an available model's capabilities and operational parameters."""
@@ -64,8 +83,42 @@ class ModelCapabilityInfo:
     privacy_classification: str = "local"  # "local" | "cloud-enterprise" | "cloud-public"
     confirmed_capabilities: List[str] = field(default_factory=list)
     provider_declared_capabilities: List[str] = field(default_factory=list)
+    provenance: Dict[str, str] = field(default_factory=dict)
     last_checked: float = field(default_factory=time.time)
     error_message: Optional[str] = None
+
+    def has_capability(self, cap: str, allow_inferred: bool = True) -> bool:
+        """Strict capability verification. Unknown capability provenance is never treated as confirmed."""
+        norm_cap = cap.lower().strip()
+        prov = self.provenance.get(norm_cap, "")
+        if prov == CapabilityProvenance.UNKNOWN.value:
+            return False
+
+        if norm_cap in [c.lower() for c in self.confirmed_capabilities]:
+            return True
+
+        if norm_cap in [c.lower() for c in self.provider_declared_capabilities]:
+            return True
+
+        if allow_inferred and prov != CapabilityProvenance.UNKNOWN.value:
+            if norm_cap in ("tools", "tool_calling", "function_calling"):
+                return self.supports_tools
+            if norm_cap in ("structured_output", "json_mode"):
+                return self.supports_structured_output
+            if norm_cap in ("reasoning", "thinking"):
+                return self.supports_reasoning
+            if norm_cap in ("coding", "code"):
+                return self.supports_coding
+            if norm_cap in ("vision", "multimodal"):
+                return self.supports_vision
+            if norm_cap in ("audio_in",):
+                return self.supports_audio_in
+            if norm_cap in ("audio_out",):
+                return self.supports_audio_out
+            if norm_cap in ("streaming",):
+                return self.supports_streaming
+
+        return False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -93,6 +146,8 @@ class SelectionResult:
     candidate_scores: Dict[str, float] = field(default_factory=dict)
     hardware_notes: str = ""
     selected_at: float = field(default_factory=time.time)
+    error: Optional[str] = None
+    is_compatible: bool = True
 
     @property
     def model_name(self) -> str:
@@ -112,3 +167,22 @@ class SelectionResult:
         d["rationale"] = self.reason
         d["policy_used"] = self.policy
         return d
+
+
+class NoCompatibleModelAvailableResult(SelectionResult):
+    """Explicit SelectionResult indicating no model was compatible."""
+
+    def __init__(self, message: str = "No compatible model available", task_type: str = "general", policy: str = "balanced") -> None:
+        super().__init__(
+            model_id="",
+            provider="none",
+            task_type=task_type,
+            reason=message,
+            policy=policy,
+            is_local=False,
+            context_length=0,
+            score=0.0,
+            hardware_notes="No candidate model satisfies requirements and constraints.",
+            error="NoCompatibleModelAvailable",
+            is_compatible=False,
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from http.client import HTTPResponse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,16 +23,72 @@ from openjarvis.tools._stubs import BaseTool, ToolSpec
 from openjarvis.tools.approval_store import (
     ApprovalStore,
     STATUS_APPROVED,
+    STATUS_DENIED,
+    STATUS_EXECUTED,
+    STATUS_EXPIRED,
+    STATUS_PENDING,
     TIER_HIGH,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OpenJarvis/1.0"
-# Default live n8n instance endpoint
 DEFAULT_N8N_URL = "https://n8n.kavlien.store"
-# 6 days session cache TTL to avoid HTTP 429 Too Many Requests
-SESSION_COOKIE_TTL_SECONDS = 6 * 24 * 3600
+
+
+def _validate_base_url(url: str) -> str:
+    """Validate base URL against SSRF and unsupported protocols."""
+    parsed = urllib.parse.urlparse(url.strip())
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid URL scheme '{parsed.scheme}': must be http or https")
+    if not parsed.netloc:
+        raise ValueError("Invalid n8n URL: missing network location/host")
+    return url.rstrip("/")
+
+
+def _sanitize_path(path: str) -> str:
+    """Sanitize endpoint or webhook path against directory traversal."""
+    unquoted = urllib.parse.unquote(path).strip()
+    if ".." in unquoted or unquoted.startswith("//") or "\0" in unquoted or "\\" in unquoted:
+        raise ValueError(f"Security boundary violation: invalid path traversal detected in '{path}'")
+    clean = unquoted if unquoted.startswith("/") else f"/{unquoted}"
+    return clean
+
+
+def _canonical_payload_hash(payload: Any) -> str:
+    """Generate deterministic SHA-256 hash of canonicalized JSON payload."""
+    try:
+        canon = json.dumps(payload or {}, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        canon = str(payload)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+
+DEFAULT_SESSION_COOKIE_TTL_SECONDS = 6 * 24 * 3600
+
+
+def _parse_cookie_expiry(set_cookie_header: str) -> float:
+    """Parse real cookie expiry from Set-Cookie header rather than assuming fixed TTL."""
+    now = time.time()
+    parts = [p.strip() for p in set_cookie_header.split(";")]
+    for p in parts[1:]:
+        lower = p.lower()
+        if lower.startswith("max-age="):
+            try:
+                sec = float(p.split("=", 1)[1].strip())
+                return now + max(60.0, sec)
+            except ValueError:
+                pass
+        elif lower.startswith("expires="):
+            try:
+                import email.utils
+
+                dt = email.utils.parsedate_to_datetime(p.split("=", 1)[1].strip())
+                return dt.timestamp()
+            except Exception:
+                pass
+    # Fallback to default session TTL if neither directive was supplied
+    return now + DEFAULT_SESSION_COOKIE_TTL_SECONDS
 
 
 class N8nClient:
@@ -43,12 +101,13 @@ class N8nClient:
         email_or_login_id: Optional[str] = None,
         password: Optional[str] = None,
     ) -> None:
-        self.base_url = (
+        raw_url = (
             base_url
             or os.environ.get("OPENJARVIS_N8N_URL")
             or self._load_config_value("url")
             or DEFAULT_N8N_URL
-        ).rstrip("/")
+        )
+        self.base_url = _validate_base_url(raw_url)
         self.api_key = (
             api_key
             or os.environ.get("OPENJARVIS_N8N_API_KEY")
@@ -81,6 +140,7 @@ class N8nClient:
             if p.is_file():
                 try:
                     import tomllib
+
                     with open(p, "rb") as f:
                         data = tomllib.load(f)
                     val = data.get("n8n", {}).get(key)
@@ -91,12 +151,11 @@ class N8nClient:
         return None
 
     def _ensure_session(self) -> Optional[str]:
-        """Authenticate via /rest/login using emailOrLdapLoginId with in-memory caching."""
+        """Authenticate via /rest/login using emailOrLdapLoginId with real cookie TTL caching."""
         if not self.email_or_login_id or not self.password:
             return None
 
         with self._auth_lock:
-            # Check cached cookie validity
             now = time.time()
             if self._session_cookie and now < self._session_cookie_expires_at:
                 return self._session_cookie
@@ -121,11 +180,10 @@ class N8nClient:
                 with urllib.request.urlopen(req, timeout=5.0) as resp:
                     set_cookie = resp.headers.get("Set-Cookie")
                     if set_cookie:
-                        # Extract cookie string (e.g. n8n-auth=...)
                         cookie_part = set_cookie.split(";")[0].strip()
                         self._session_cookie = cookie_part
-                        self._session_cookie_expires_at = now + SESSION_COOKIE_TTL_SECONDS
-                        logger.info("Successfully established and cached n8n session cookie (TTL=6d)")
+                        self._session_cookie_expires_at = _parse_cookie_expiry(set_cookie)
+                        logger.info("Successfully established n8n session cookie (expires_at=%.0f)", self._session_cookie_expires_at)
                         return self._session_cookie
             except urllib.error.HTTPError as exc:
                 if exc.code == 429:
@@ -146,8 +204,8 @@ class N8nClient:
         timeout: float = 6.0,
         retry_auth: bool = True,
     ) -> Dict[str, Any]:
-        """Perform HTTP request against n8n with API key or session cookie."""
-        clean_ep = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        """Perform sanitized HTTP request against n8n with API key or session cookie."""
+        clean_ep = _sanitize_path(endpoint)
         url = f"{self.base_url}{clean_ep}"
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
@@ -155,11 +213,10 @@ class N8nClient:
             "User-Agent": DEFAULT_USER_AGENT,
         }
 
-        # 1. API key if configured
+        # API key if configured
         if self.api_key:
             headers["X-N8N-API-KEY"] = self.api_key
         else:
-            # 2. Session cookie if configured
             cookie = self._ensure_session()
             if cookie:
                 headers["Cookie"] = cookie
@@ -182,39 +239,53 @@ class N8nClient:
             raise RuntimeError(f"n8n HTTP {exc.code}: {raw_err or exc.reason}")
 
     def check_health(self) -> Dict[str, Any]:
-        """Check whether n8n instance is reachable and healthy."""
+        """Check whether n8n instance is reachable and distinguish authenticated API health."""
         t0 = time.time()
         url = f"{self.base_url}/healthz"
+        basic_online = False
+        status_code = 0
+        api_authenticated = False
+        auth_error: Optional[str] = None
+
         try:
             req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT}, method="GET")
             with urllib.request.urlopen(req, timeout=3.0) as resp:
-                elapsed_ms = round((time.time() - t0) * 1000, 1)
-                return {
-                    "online": resp.getcode() == 200,
-                    "status_code": resp.getcode(),
-                    "base_url": self.base_url,
-                    "latency_ms": elapsed_ms,
-                    "auth_mode": "api_key" if self.api_key else ("session" if self._session_cookie or (self.email_or_login_id and self.password) else "unauthenticated"),
-                }
+                status_code = resp.getcode()
+                basic_online = (status_code == 200)
         except Exception as exc:
-            elapsed_ms = round((time.time() - t0) * 1000, 1)
-            return {
-                "online": False,
-                "status_code": 0,
-                "base_url": self.base_url,
-                "latency_ms": elapsed_ms,
-                "error": str(exc),
-                "auth_mode": "unknown",
-            }
+            status_code = 0
+            auth_error = str(exc)
+
+        # Distinguish authenticated API health
+        has_creds = bool(self.api_key or (self.email_or_login_id and self.password) or self._session_cookie)
+        if basic_online and has_creds:
+            try:
+                # Probe API endpoint to verify active authentication
+                self.list_workflows()
+                api_authenticated = True
+            except Exception as exc:
+                api_authenticated = False
+                auth_error = str(exc)
+
+        elapsed_ms = round((time.time() - t0) * 1000, 1)
+        auth_mode = "api_key" if self.api_key else ("session" if has_creds else "unauthenticated")
+
+        return {
+            "online": basic_online,
+            "api_authenticated": api_authenticated,
+            "status_code": status_code,
+            "base_url": self.base_url,
+            "latency_ms": elapsed_ms,
+            "auth_mode": auth_mode,
+            "error": auth_error,
+        }
 
     def list_workflows(self) -> List[Dict[str, Any]]:
         """List workflows from n8n (supports both /rest/workflows and /api/v1/workflows)."""
-        # Try /rest/workflows first (session auth endpoint)
         endpoint = "/rest/workflows" if not self.api_key else "/api/v1/workflows"
         try:
             res = self._make_request(endpoint)
         except Exception:
-            # Fallback to alternate endpoint
             alt_endpoint = "/api/v1/workflows" if endpoint == "/rest/workflows" else "/rest/workflows"
             res = self._make_request(alt_endpoint)
 
@@ -233,30 +304,32 @@ class N8nClient:
 
     def get_workflow(self, workflow_id: str) -> Dict[str, Any]:
         """Fetch complete definition for a workflow."""
-        endpoint = f"/rest/workflows/{workflow_id}" if not self.api_key else f"/api/v1/workflows/{workflow_id}"
+        clean_id = _sanitize_path(workflow_id).lstrip("/")
+        endpoint = f"/rest/workflows/{clean_id}" if not self.api_key else f"/api/v1/workflows/{clean_id}"
         try:
             res = self._make_request(endpoint)
             return res.get("data", res)
         except Exception:
-            alt_endpoint = f"/api/v1/workflows/{workflow_id}" if "rest" in endpoint else f"/rest/workflows/{workflow_id}"
+            alt_endpoint = f"/api/v1/workflows/{clean_id}" if "rest" in endpoint else f"/rest/workflows/{clean_id}"
             res = self._make_request(alt_endpoint)
             return res.get("data", res)
 
     def execute_workflow(self, workflow_id: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Run workflow execution."""
-        endpoint = f"/rest/workflows/{workflow_id}/run" if not self.api_key else f"/api/v1/workflows/{workflow_id}/run"
+        clean_id = _sanitize_path(workflow_id).lstrip("/")
+        endpoint = f"/rest/workflows/{clean_id}/run" if not self.api_key else f"/api/v1/workflows/{clean_id}/run"
         payload = {"data": data or {}}
         try:
             return self._make_request(endpoint, method="POST", data=payload)
         except Exception:
-            alt_endpoint = f"/api/v1/workflows/{workflow_id}/run" if "rest" in endpoint else f"/rest/workflows/{workflow_id}/run"
+            alt_endpoint = f"/api/v1/workflows/{clean_id}/run" if "rest" in endpoint else f"/rest/workflows/{clean_id}/run"
             return self._make_request(alt_endpoint, method="POST", data=payload)
 
     def trigger_webhook(self, path: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Trigger an n8n webhook slug or endpoint."""
-        clean_path = path if path.startswith("/") else f"/{path}"
+        clean_path = _sanitize_path(path)
         url = f"{self.base_url}{clean_path}"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT}
         body = json.dumps(data or {}).encode("utf-8")
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10.0) as resp:
@@ -279,7 +352,7 @@ def get_n8n_client() -> N8nClient:
 
 @ToolRegistry.register("n8n")
 class N8nTool(BaseTool):
-    """Integrates Jarvis with n8n workflow automation with approval gating."""
+    """Integrates Jarvis with n8n workflow automation with strict human approval gating."""
 
     tool_id = "n8n"
 
@@ -299,7 +372,7 @@ class N8nTool(BaseTool):
             description=(
                 "Interact with an n8n workflow instance to check health, "
                 "list active workflows, inspect workflow details, trigger webhooks, or execute automated workflows. "
-                "Mutating execution operations are strictly gated by human approval."
+                "Mutating execution operations and sensitive webhook triggers are strictly gated by human approval."
             ),
             parameters={
                 "type": "object",
@@ -360,35 +433,39 @@ class N8nTool(BaseTool):
             elif action == "get_workflow":
                 if not workflow_id:
                     return ToolResult(tool_name="n8n", content="workflow_id is required for get_workflow", success=False)
-                wf = self.client.get_workflow(workflow_id)
+                clean_id = _sanitize_path(workflow_id).lstrip("/")
+                wf = self.client.get_workflow(clean_id)
                 return ToolResult(tool_name="n8n", content=json.dumps(wf, indent=2), success=True)
 
             elif action == "execute_workflow":
                 if not workflow_id:
                     return ToolResult(tool_name="n8n", content="workflow_id is required for execute_workflow", success=False)
 
-                # Security Approval Gate: mutating workflow execution
-                is_approved = self._check_approval(
+                clean_id = _sanitize_path(workflow_id).lstrip("/")
+                canon_hash = _canonical_payload_hash(payload)
+                perm_key = f"n8n:workflow:{clean_id}:{canon_hash}"
+
+                is_approved, app_msg = self._check_approval(
                     action_type="n8n_execute_workflow",
-                    desc=f"Execute n8n workflow '{workflow_id}' with payload {payload}",
-                    payload={"workflow_id": workflow_id, "data": payload},
-                    permission_key=f"n8n:workflow:execute:{workflow_id}",
+                    desc=f"Execute n8n workflow '{clean_id}'",
+                    payload=payload,
+                    permission_key=perm_key,
                     approval_id=approval_id,
                 )
-                if not is_approved[0]:
+                if not is_approved:
                     return ToolResult(
                         tool_name="n8n",
                         content=(
-                            f"Action required approval: executing workflow '{workflow_id}' is gated. "
-                            f"Approval queued with ID: {is_approved[1]}. Please approve to execute."
+                            f"Action required approval: executing workflow '{clean_id}' is gated. "
+                            f"{app_msg}"
                         ),
                         success=False,
                     )
 
-                res = self.client.execute_workflow(workflow_id, data=payload)
+                res = self.client.execute_workflow(clean_id, data=payload)
                 return ToolResult(
                     tool_name="n8n",
-                    content=f"Workflow '{workflow_id}' executed: {json.dumps(res, indent=2)}",
+                    content=f"Workflow '{clean_id}' executed: {json.dumps(res, indent=2)}",
                     success=True,
                 )
 
@@ -396,10 +473,32 @@ class N8nTool(BaseTool):
                 if not webhook_path:
                     return ToolResult(tool_name="n8n", content="webhook_path is required for trigger_webhook", success=False)
 
-                res = self.client.trigger_webhook(webhook_path, data=payload)
+                clean_path = _sanitize_path(webhook_path)
+                canon_hash = _canonical_payload_hash(payload)
+                perm_key = f"n8n:webhook:{clean_path.strip('/')}:{canon_hash}"
+
+                # Security Approval Gate: Every sensitive webhook trigger must require explicit approval
+                is_approved, app_msg = self._check_approval(
+                    action_type="n8n_trigger_webhook",
+                    desc=f"Trigger n8n webhook '{clean_path}'",
+                    payload=payload,
+                    permission_key=perm_key,
+                    approval_id=approval_id,
+                )
+                if not is_approved:
+                    return ToolResult(
+                        tool_name="n8n",
+                        content=(
+                            f"Action required approval: webhook '{clean_path}' is gated. "
+                            f"{app_msg}"
+                        ),
+                        success=False,
+                    )
+
+                res = self.client.trigger_webhook(clean_path, data=payload)
                 return ToolResult(
                     tool_name="n8n",
-                    content=f"Webhook '{webhook_path}' triggered: {json.dumps(res, indent=2)}",
+                    content=f"Webhook '{clean_path}' triggered: {json.dumps(res, indent=2)}",
                     success=True,
                 )
 
@@ -421,24 +520,77 @@ class N8nTool(BaseTool):
         payload: Dict[str, Any],
         permission_key: str,
         approval_id: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
-        """Verify action has human approval or queue pending approval."""
+    ) -> Tuple[bool, str]:
+        """Verify action has human approval with strict single-use, expiry, and payload binding."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         if approval_id:
             action = self._approval_store.get_action(approval_id)
-            if action and action.status == STATUS_APPROVED:
-                return True, action.id
+            if not action:
+                return False, f"Approval ID '{approval_id}' not found."
 
+            if action.status == STATUS_EXECUTED:
+                return False, f"Approval ID '{approval_id}' has already been consumed (single-use constraint)."
+
+            if action.status == STATUS_DENIED:
+                return False, f"Approval ID '{approval_id}' was denied by user."
+
+            if action.status == STATUS_EXPIRED:
+                return False, f"Approval ID '{approval_id}' has expired."
+
+            if action.status != STATUS_APPROVED:
+                return False, f"Approval ID '{approval_id}' is pending approval (current status: {action.status})."
+
+            # Check expiration
+            if action.expires_at and action.expires_at <= now_iso:
+                self._approval_store.update_status(action.id, STATUS_EXPIRED)
+                return False, f"Approval ID '{approval_id}' has expired."
+
+            # Strict validation: Action type must match exactly
+            if action.action_type != action_type:
+                return False, (
+                    f"Approval action type mismatch: approval authorizes '{action.action_type}', "
+                    f"not '{action_type}'."
+                )
+
+            # Strict validation: Permission key must match exactly (workflow ID / path & payload hash)
+            if action.permission_key != permission_key:
+                return False, (
+                    "Approval permission mismatch: approval does not authorize this specific workflow or payload. "
+                    "Changed payload or target requires a new approval."
+                )
+
+            # Prevent agent self-approval
+            if isinstance(action.payload, dict) and action.payload.get("_requester") == "agent" and not action.decision_at:
+                return False, "Agent-generated requests cannot approve themselves."
+
+            # SINGLE-USE APPROVAL SEMANTICS: Consume approval immediately
+            self._approval_store.update_status(action.id, STATUS_EXECUTED)
+            return True, action.id
+
+        # If no approval ID provided, check for unconsumed approved action for this exact permission key
         existing = self._approval_store.get_action_by_permission_key(permission_key)
         if existing and existing.status == STATUS_APPROVED:
-            return True, existing.id
-        if existing:
-            return False, existing.id
+            if not existing.expires_at or existing.expires_at > now_iso:
+                self._approval_store.update_status(existing.id, STATUS_EXECUTED)
+                return True, existing.id
+            else:
+                self._approval_store.update_status(existing.id, STATUS_EXPIRED)
 
+        if existing and existing.status == STATUS_PENDING:
+            return False, f"Approval queued with ID: {existing.id}. Please approve to execute."
+
+        # Queue new high-tier pending action
         action = self._approval_store.queue_action(
             action_type=action_type,
             description=desc,
-            payload=payload,
+            payload={
+                "permission_key": permission_key,
+                "action_type": action_type,
+                "payload_hash": _canonical_payload_hash(payload),
+                "_requester": "user",
+            },
             permission_key=permission_key,
             tier=TIER_HIGH,
         )
-        return False, action.id
+        return False, f"Approval queued with ID: {action.id}. Please approve to execute."

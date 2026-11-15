@@ -144,11 +144,15 @@ async def switch_model(req: ModelSwitchRequest, request: Request) -> Dict[str, A
 @router.get("/hardware")
 async def get_hardware_profile() -> Dict[str, Any]:
     """Retrieve host hardware constraints and active inference slots."""
+    from openjarvis.core.config import detect_hardware
     selector = get_model_selection_engine()
+    hw = detect_hardware()
+    gpu_str = f"{hw.gpu.name} ({hw.gpu.vram_gb} GB)" if hw.gpu else "None detected (CPU mode)"
+    cpu_str = f"{hw.cpu_brand} ({hw.cpu_count} cores)" if hw.cpu_brand else f"CPU ({hw.cpu_count} cores)"
     return {
         "vram_limit_mb": selector.vram_limit_mb,
         "max_concurrent_inferences": selector.max_concurrent_inferences,
         "active_inferences": selector._active_inferences,
-        "gpu_detected": "NVIDIA GeForce GTX 1650 (4.0 GB)",
-        "cpu_profile": "AMD Ryzen 5 5600H (6 cores)",
+        "gpu_detected": gpu_str,
+        "cpu_profile": cpu_str,
     }

@@ -14,7 +14,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Set
 
 from openjarvis.core.config import JarvisConfig, load_config
-from openjarvis.models.capabilities import ModelCapabilityInfo
+from openjarvis.models.capabilities import CapabilityProvenance, ModelCapabilityInfo
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +185,20 @@ class ModelDiscoveryEngine:
                     caps = m.get("capabilities") or []
                     param_size = self._parse_param_size(str(details.get("parameter_size", "")))
 
+                    supp_tools = "tools" in caps or bool(_CODING_PATTERNS.search(name))
+                    supp_coding = bool(_CODING_PATTERNS.search(name)) or "coder" in name
+                    supp_reasoning = bool(_REASONING_PATTERNS.search(name))
+                    supp_vision = "vision" in caps or bool(_VISION_PATTERNS.search(name))
+
+                    ollama_provenance = {
+                        "streaming": CapabilityProvenance.PROVIDER_DECLARED.value,
+                        "structured_output": CapabilityProvenance.PROVIDER_DECLARED.value,
+                        "tools": CapabilityProvenance.PROVIDER_DECLARED.value if "tools" in caps else (CapabilityProvenance.INFERRED.value if supp_tools else CapabilityProvenance.UNKNOWN.value),
+                        "coding": CapabilityProvenance.INFERRED.value if supp_coding else CapabilityProvenance.UNKNOWN.value,
+                        "reasoning": CapabilityProvenance.INFERRED.value if supp_reasoning else CapabilityProvenance.UNKNOWN.value,
+                        "vision": CapabilityProvenance.PROVIDER_DECLARED.value if "vision" in caps else (CapabilityProvenance.INFERRED.value if supp_vision else CapabilityProvenance.UNKNOWN.value),
+                    }
+
                     cap = ModelCapabilityInfo(
                         model_id=name,
                         provider="ollama",
@@ -192,17 +206,20 @@ class ModelDiscoveryEngine:
                         is_local=True,
                         is_free=True,
                         context_length=int(details.get("context_length") or 8192),
-                        supports_tools="tools" in caps or bool(_CODING_PATTERNS.search(name)),
+                        supports_tools=supp_tools,
                         supports_structured_output=True,
-                        supports_reasoning=bool(_REASONING_PATTERNS.search(name)),
-                        supports_coding=bool(_CODING_PATTERNS.search(name)) or "coder" in name,
-                        supports_vision="vision" in caps or bool(_VISION_PATTERNS.search(name)),
+                        supports_reasoning=supp_reasoning,
+                        supports_coding=supp_coding,
+                        supports_vision=supp_vision,
                         supports_streaming=True,
                         health_status="healthy",
                         latency_ms=latency_ms,
                         vram_mb_required=self._estimate_vram_mb(param_size),
                         parameter_size_b=param_size,
                         quantization=str(details.get("quantization_level", "Q4")),
+                        confirmed_capabilities=["streaming"],
+                        provider_declared_capabilities=caps,
+                        provenance=ollama_provenance,
                     )
                     models.append(cap)
         except Exception as exc:
@@ -264,43 +281,78 @@ class ModelDiscoveryEngine:
             from openjarvis.engine.cloud import CloudEngine
 
             engine = CloudEngine()
-            cloud_model_ids = engine.list_models()
 
-            # Record health per active client
-            cloud_clients = {
-                "openai": engine._openai_client is not None,
-                "anthropic": engine._anthropic_client is not None,
-                "google": engine._google_client is not None,
-                "deepseek": engine._deepseek_client is not None,
-                "openrouter": engine._openrouter_client is not None,
-            }
+            # Map of provider name -> (client, probe_function)
+            providers_to_probe = [
+                ("openai", engine._openai_client),
+                ("anthropic", engine._anthropic_client),
+                ("google", engine._google_client),
+                ("deepseek", engine._deepseek_client),
+                ("openrouter", engine._openrouter_client),
+            ]
 
-            for prov, connected in cloud_clients.items():
-                self._provider_health[prov] = {
-                    "provider": prov,
-                    "type": "cloud",
-                    "status": "healthy" if connected else "unconfigured",
-                    "model_count": len([m for m in cloud_model_ids if prov in m.lower() or m.startswith(prov)]) if connected else 0,
-                    "latency_ms": 150.0 if connected else 0.0,
-                    "last_checked": time.time(),
-                    "error": None if connected else "API key not configured",
-                }
+            for prov, client in providers_to_probe:
+                if client is None:
+                    self._provider_health[prov] = {
+                        "provider": prov,
+                        "type": "cloud",
+                        "status": "unconfigured",
+                        "model_count": 0,
+                        "latency_ms": 0.0,
+                        "last_checked": time.time(),
+                        "error": "API key not configured",
+                    }
+                    continue
 
-            for m_id in cloud_model_ids:
-                prov = "cloud"
-                if "gpt" in m_id.lower() or "o1" in m_id.lower() or "o3" in m_id.lower():
-                    prov = "openai"
-                elif "claude" in m_id.lower():
-                    prov = "anthropic"
-                elif "gemini" in m_id.lower():
-                    prov = "google"
-                elif "deepseek" in m_id.lower():
-                    prov = "deepseek"
-                elif m_id.startswith("openrouter/"):
-                    prov = "openrouter"
+                # Live query provider model list API and measure real latency
+                t0 = time.monotonic()
+                prov_models: List[str] = []
+                try:
+                    if prov in ("openai", "deepseek", "openrouter") and hasattr(client, "models") and hasattr(client.models, "list"):
+                        list_resp = client.models.list()
+                        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                        data_items = getattr(list_resp, "data", [])
+                        for item in data_items:
+                            m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
+                            if m_id:
+                                prov_models.append(m_id)
+                    elif prov == "google" and hasattr(client, "models") and hasattr(client.models, "list"):
+                        list_resp = client.models.list()
+                        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                        for m in list_resp:
+                            m_name = getattr(m, "name", str(m))
+                            prov_models.append(m_name)
+                    else:
+                        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                        prov_models = []
 
-                cap = self._analyze_model_capability(m_id, prov, is_local=False, latency_ms=180.0)
-                models.append(cap)
+                    self._provider_health[prov] = {
+                        "provider": prov,
+                        "type": "cloud",
+                        "status": "healthy" if prov_models else "degraded",
+                        "model_count": len(prov_models),
+                        "latency_ms": elapsed_ms,
+                        "last_checked": time.time(),
+                        "error": None if prov_models else "No models returned from provider API",
+                    }
+
+                    for m_id in prov_models:
+                        cap = self._analyze_model_capability(m_id, prov, is_local=False, latency_ms=elapsed_ms)
+                        cap.provenance["tools"] = CapabilityProvenance.PROVIDER_DECLARED.value
+                        models.append(cap)
+
+                except Exception as exc:
+                    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                    self._provider_health[prov] = {
+                        "provider": prov,
+                        "type": "cloud",
+                        "status": "offline",
+                        "model_count": 0,
+                        "latency_ms": elapsed_ms,
+                        "last_checked": time.time(),
+                        "error": str(exc),
+                    }
+                    # Offline / unconfigured providers contribute zero selectable models
         except Exception as exc:
             logger.debug("Cloud engine probe error: %s", exc)
 
@@ -320,7 +372,7 @@ class ModelDiscoveryEngine:
         is_reasoning = bool(_REASONING_PATTERNS.search(model_id)) or "r1" in model_id.lower()
         is_vision = bool(_VISION_PATTERNS.search(model_id))
 
-        # Flag tool calling support (modern instruct / coder models support tool calling)
+        # Flag tool calling support
         supports_tools = True
         if "instruct" not in model_id.lower() and "chat" not in model_id.lower() and "coder" not in model_id.lower() and is_local and param_size < 3:
             supports_tools = False
@@ -333,6 +385,36 @@ class ModelDiscoveryEngine:
             ctx = 32768
         elif "16k" in model_id.lower():
             ctx = 16384
+
+        # Provenance attribution
+        provenance: Dict[str, str] = {
+            "streaming": CapabilityProvenance.PROVIDER_DECLARED.value,
+            "structured_output": CapabilityProvenance.PROVIDER_DECLARED.value if not is_local else CapabilityProvenance.INFERRED.value,
+        }
+        confirmed: List[str] = ["streaming"]
+        declared: List[str] = ["structured_output"] if not is_local else []
+
+        if supports_tools:
+            provenance["tools"] = CapabilityProvenance.PROVIDER_DECLARED.value if not is_local else CapabilityProvenance.INFERRED.value
+            if not is_local:
+                declared.append("tools")
+        else:
+            provenance["tools"] = CapabilityProvenance.UNKNOWN.value
+
+        if is_coding:
+            provenance["coding"] = CapabilityProvenance.INFERRED.value
+        else:
+            provenance["coding"] = CapabilityProvenance.UNKNOWN.value
+
+        if is_reasoning:
+            provenance["reasoning"] = CapabilityProvenance.INFERRED.value
+        else:
+            provenance["reasoning"] = CapabilityProvenance.UNKNOWN.value
+
+        if is_vision:
+            provenance["vision"] = CapabilityProvenance.INFERRED.value
+        else:
+            provenance["vision"] = CapabilityProvenance.UNKNOWN.value
 
         return ModelCapabilityInfo(
             model_id=model_id,
@@ -352,6 +434,9 @@ class ModelDiscoveryEngine:
             vram_mb_required=self._estimate_vram_mb(param_size) if is_local else 0,
             parameter_size_b=param_size,
             privacy_classification="local" if is_local else "cloud-enterprise",
+            confirmed_capabilities=confirmed,
+            provider_declared_capabilities=declared,
+            provenance=provenance,
         )
 
     def _parse_param_size(self, text: str) -> float:
