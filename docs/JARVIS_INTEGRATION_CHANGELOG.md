@@ -1,5 +1,33 @@
 # Jarvis V1 Integration & Upgrade Changelog
 
+## Version: Voice Mode Emoji Normalization, Container Isolation Hardening & Exact Reconciliation Pass
+**Date:** 2026-11-15  
+**Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  
+
+### Key Highlights:
+1. **Voice Mode Emoji Pronunciation Remediation (`frontend/src/lib/message-text.ts`, `frontend/src/components/Chat/VoiceMode.tsx`)**:
+   - Replaced flawed ad-hoc `speakable()` method in `VoiceMode.tsx` with shared, centralized `toSpeakableText()` and `stripEmojis()`.
+   - Built comprehensive Unicode regex matching Regional Indicator flags, keycaps (`[0-9#*]\uFE0F?\u20E3`), Fitzpatrick skin tones (`\u{1F3FB}-\u{1F3FF}`), compound ZWJ sequences (`\u200D`), tag sequences, and Dingbats.
+   - Preserves 100% of emojis in chat messages and Voice Mode display text; strips emojis strictly before browser `speechSynthesis.speak` and backend speech synthesis.
+   - Implemented streaming sentence-by-sentence speech chunking with boundary matching, zero empty/whitespace utterances, and immediate barge-in audio cancellation via `speechSynthesis.cancel()`.
+   - Added 20 vitest tests in `message-text.test.ts` and 4 tests in `VoiceMode.test.tsx` verifying all 15 edge cases.
+
+2. **FORGE Container Sandbox Hardening (`src/openjarvis/sandbox/verification_runner.py`)**:
+   - Enforced container isolation arguments: `--network none`, `--user 1000:1000`, `--cap-drop=ALL`, `--security-opt no-new-privileges`, `--read-only`, `--tmpfs /tmp:rw,noexec,nosuid,size=64m`, CPU/mem/PID limits, and workspace-only rw mount.
+   - Untrusted project test commands (`pytest`, `npm test`, etc.) fail closed with `status="blocked"` and `sandbox_mode="blocked_no_container"` when container sandbox is unavailable, unless explicitly run in a trusted environment.
+   - Hardened path traversal checks against URL-encoded paths (`%2e%2e`), UNC paths (`\\`), and Windows drive root escapes.
+
+3. **n8n Exact Reconciliation & Execution Ledger (`src/openjarvis/tools/n8n.py`)**:
+   - Updated `reconcile_workflow_execution()` to correlate executions using exact workflow ID, `started_after` timestamp, `approval_id`, and `idempotency_key`, preventing false reconciliation against older executions.
+   - Accurate state mapping: `STATUS_EXECUTED` on success, `STATUS_EXECUTING` while running, `STATUS_FAILED` on failure, and `STATUS_APPROVED` when authoritatively confirmed never started.
+   - Introduced `N8nExecutionLedger` tracking execution attempts, dispatch timestamps, payload hashes, and outcomes.
+
+4. **Model Discovery HTTP 401 Classification (`src/openjarvis/models/discovery.py`)**:
+   - Explicitly mapped HTTP 401 and authentication errors to `status="auth_error"`, `connected=False`, and `model_count=0` (never `connected=True` or `degraded`).
+   - Mapped cloud empty model lists to `status="degraded"` and `connected=False`.
+
+---
+
 ## Version: Final Security Hardening, Process Isolation & Test Reproducibility Pass
 **Date:** 2026-11-15  
 **Architect:** Principal AI Systems & Security Architect  

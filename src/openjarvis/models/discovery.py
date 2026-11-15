@@ -398,16 +398,28 @@ class ModelDiscoveryEngine:
                         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                         prov_models = []
 
-                    self._provider_health[prov] = {
-                        "provider": prov,
-                        "type": "cloud",
-                        "status": "healthy" if prov_models else "degraded",
-                        "connected": True,
-                        "model_count": len(prov_models),
-                        "latency_ms": elapsed_ms,
-                        "last_checked": time.time(),
-                        "error": None if prov_models else "No models returned from provider API",
-                    }
+                    if prov_models:
+                        self._provider_health[prov] = {
+                            "provider": prov,
+                            "type": "cloud",
+                            "status": "healthy",
+                            "connected": True,
+                            "model_count": len(prov_models),
+                            "latency_ms": elapsed_ms,
+                            "last_checked": time.time(),
+                            "error": None,
+                        }
+                    else:
+                        self._provider_health[prov] = {
+                            "provider": prov,
+                            "type": "cloud",
+                            "status": "degraded",
+                            "connected": False,
+                            "model_count": 0,
+                            "latency_ms": elapsed_ms,
+                            "last_checked": time.time(),
+                            "error": "No models returned from provider API",
+                        }
 
                     for m_id in prov_models:
                         cap = self._analyze_model_capability(m_id, prov, is_local=False, latency_ms=elapsed_ms)
@@ -416,19 +428,23 @@ class ModelDiscoveryEngine:
                 except Exception as exc:
                     elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                     err_str = str(exc).lower()
+                    code = getattr(exc, "status_code", getattr(exc, "code", getattr(exc, "http_status", None)))
                     connected = False
-                    if "auth" in err_str or "401" in err_str or "unauthorized" in err_str or "invalid api key" in err_str:
+                    if code in (401, 403) or "auth" in err_str or "401" in err_str or "403" in err_str or "unauthorized" in err_str or "invalid api key" in err_str or "forbidden" in err_str:
                         status = "auth_error"
-                    elif "429" in err_str or "rate limit" in err_str or "quota" in err_str:
+                        connected = False
+                    elif code == 429 or "429" in err_str or "rate limit" in err_str or "quota" in err_str:
                         status = "rate_limited"
                         connected = True
-                    elif "404" in err_str or "405" in err_str or "not found" in err_str or "unsupported" in err_str:
+                    elif code in (404, 405) or "404" in err_str or "405" in err_str or "not found" in err_str or "unsupported" in err_str:
                         status = "unsupported_endpoint"
                         connected = True
                     elif "timeout" in err_str or "connection" in err_str or "unreachable" in err_str:
                         status = "unreachable"
+                        connected = False
                     else:
                         status = "offline"
+                        connected = False
 
                     self._provider_health[prov] = {
                         "provider": prov,

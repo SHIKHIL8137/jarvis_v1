@@ -78,10 +78,11 @@ def test_discover_all_returns_models_mocked_deterministic():
 
     with patch("urllib.request.urlopen", return_value=mock_http_resp):
         with patch.object(engine, "_probe_cloud_engines", return_value=[]):
-            models = engine.discover_all(force=True)
+            with patch("openjarvis.engine._discovery.discover_engines", return_value=[]):
+                models = engine.discover_all(force=True)
 
-            assert isinstance(models, list)
-            assert len(models) == 2
+                assert isinstance(models, list)
+                assert len(models) == 2
             model_ids = [m.model_id for m in models]
             assert "qwen2.5-coder:7b" in model_ids
             assert "llama3.2:3b" in model_ids
@@ -128,9 +129,37 @@ def test_discovery_invalid_api_key():
                 assert isinstance(models, list)
                 providers = engine.list_providers()
                 openai_prov = next((p for p in providers if p.get("provider") == "openai"), None)
-                if openai_prov:
-                    assert openai_prov.get("connected") is False or openai_prov.get("status") in ("offline", "unauthorized")
-                    assert openai_prov.get("model_count") == 0
+                assert openai_prov is not None
+                assert openai_prov.get("connected") is False
+                assert openai_prov.get("status") == "auth_error"
+                assert openai_prov.get("model_count") == 0
+
+
+def test_discovery_cloud_empty_model_list():
+    """Cloud provider returning empty list must be recorded as degraded with connected=False."""
+    engine = ModelDiscoveryEngine()
+
+    mock_client = MagicMock()
+    mock_client.models.list.return_value = MagicMock(data=[])
+
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-mock-key"}):
+        with patch("openjarvis.engine.cloud.CloudEngine") as mock_engine_cls:
+            mock_inst = MagicMock()
+            mock_inst._openai_client = mock_client
+            mock_inst._anthropic_client = None
+            mock_inst._google_client = None
+            mock_inst._deepseek_client = None
+            mock_inst._openrouter_client = None
+            mock_engine_cls.return_value = mock_inst
+
+            models = engine._probe_cloud_engines()
+            assert len(models) == 0
+            providers = engine.list_providers()
+            openai_prov = next((p for p in providers if p.get("provider") == "openai"), None)
+            assert openai_prov is not None
+            assert openai_prov.get("connected") is False
+            assert openai_prov.get("status") == "degraded"
+            assert openai_prov.get("model_count") == 0
 
 
 def test_discovery_empty_model_list():

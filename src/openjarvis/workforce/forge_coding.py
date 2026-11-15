@@ -426,7 +426,7 @@ class ForgeCodingEngine:
                 changed.append(rel_path)
         return sorted(changed)
 
-    def _run_command(self, cmd: str, cwd: str) -> Dict[str, Any]:
+    def _run_command(self, cmd: str, cwd: str, trusted_environment: bool = False) -> Dict[str, Any]:
         """Run a verification command safely using isolated container sandbox or sanitized host execution.
 
         Enforces:
@@ -437,7 +437,7 @@ class ForgeCodingEngine:
         - Resource caps and execution timeout
         """
         runner = IsolatedVerificationRunner()
-        return runner.execute_verification_command(cmd, cwd=cwd)
+        return runner.execute_verification_command(cmd, cwd=cwd, trusted_environment=trusted_environment)
 
     def _auto_verify_tests(self, workdir: Path) -> Optional[Dict[str, Any]]:
         """Attempt best-effort test verification if test files are present."""

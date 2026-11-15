@@ -98,8 +98,8 @@ def test_real_subprocess_execution_without_shell(tmp_path):
     assert res_ok["status"] == "passed"
     assert res_ok["exit_code"] == 0
 
-    # Failing command (non-zero exit code)
-    res_fail = engine._run_command("pytest non_existent_file_xyz_12345.py", cwd=str(tmp_path))
+    # Failing command (non-zero exit code in trusted environment)
+    res_fail = engine._run_command("pytest non_existent_file_xyz_12345.py", cwd=str(tmp_path), trusted_environment=True)
     assert res_fail["passed"] is False
     assert res_fail["status"] == "failed"
     assert res_fail["exit_code"] != 0

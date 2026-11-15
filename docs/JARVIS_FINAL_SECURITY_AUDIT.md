@@ -1,9 +1,9 @@
-# Jarvis V1 — Final Security Hardening, Process Isolation and Test Reproducibility Audit
+# Jarvis V1 — Final Security Hardening, Process Isolation, Voice Emoji Remediation and Independent Audit
 
 **Date:** 2026-11-15  
 **Auditor:** Principal AI Systems & Security Architect  
 **Target Repository:** Jarvis V1 (`oprn-jarvis`)  
-**Scope:** Source-level verification and hardening of FORGE arbitrary code execution containment, isolated verification runner, host secret elimination, n8n ambiguous outcome reconciliation, deterministic model discovery, and multi-agent test reproducibility.
+**Scope:** Source-level verification and hardening of Voice Mode speech emoji normalization, FORGE arbitrary code execution containment and container sandboxing, n8n ambiguous outcome reconciliation and execution ledger, model discovery HTTP 401 classification, capability confidence policy enforcement, and multi-agent test reproducibility.
 
 ---
 
@@ -11,29 +11,29 @@
 
 An independent, rigorous source-level security audit and remediation pass was conducted across the Jarvis V1 codebase. All findings from previous audits were critically re-evaluated and hardened against executable source code:
 
-1. **FORGE Arbitrary Code Execution Hardening (`src/openjarvis/sandbox/verification_runner.py` & `src/openjarvis/workforce/forge_coding.py`):**
-   - **Process Isolation Principle:** Recognized and documented that an executable allowlist alone **does NOT provide process isolation**. Pytest plugins, npm test scripts, conftest.py files, build scripts, and inline code can execute arbitrary instructions with host permissions.
-   - **Isolated Verification Runner:** Implemented `IsolatedVerificationRunner`. When a container runtime (Docker or Podman) is available, verification runs inside an ephemeral, disposable container with `--network none`, restricted read-only system mounts, read-write access strictly confined to `/workspace`, and CPU (`2.0`), memory (`1024m`), and process-count (`100`) limits.
-   - **Fail-Closed Untrusted Commands:** When a container sandbox is unavailable, all untrusted inline code executions (`python -c`, `python -m`, `node -e`, `node --eval`) **fail closed** with `status="blocked"` and an explicit error explanation.
-   - **Zero Host Secrets Leaked:** When running standard test suites on the host, the environment is scrubbed clean: all API keys (`OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*`, `DEEPSEEK_*`, `ATLASCLOUD_*`, `N8N_*`), tokens (`GITHUB_*`, `JWT_*`), passwords, database URLs, and AWS credentials are stripped from `os.environ` before spawning child processes.
-   - **Symlink Escape & Path Traversal Rejection:** Both working directories and command path arguments are inspected; symlinks resolving outside authorized workspace roots are rejected with `VerificationStatus.BLOCKED`.
-   - **Accurate Status Discrimination:** Cleanly distinguishes `passed` (exit 0), `failed` (test assertion failure), `blocked` (security policy rejection), `not_run` (no tests), and `inconclusive` (timeout or crash).
+1. **Voice Mode Emoji Pronunciation Remediation (`frontend/src/lib/message-text.ts`, `frontend/src/components/Chat/VoiceMode.tsx`, `frontend/src/lib/tts.ts`):**
+   - **Root Cause Eliminated:** `VoiceMode.tsx` previously implemented a private, duplicate `speakable()` function that omitted emoji stripping entirely, while `message-text.ts` lacked support for keycaps, regional flags, and Fitzpatrick skin tones.
+   - **Unified Emoji Normalization:** Implemented `stripEmojis()` covering Regional Indicator flag pairs, keycap sequences (`[0-9#*]\uFE0F?\u20E3`), Fitzpatrick skin tones (`\u{1F3FB}-\u{1F3FF}`), compound ZWJ sequences (`\u200D`), Dingbats, pictographs, and punctuation spacing normalization.
+   - **Display vs Speech Strict Separation:** Emojis and Markdown syntax remain 100% visible in the chat interface and Voice Mode visual feedback. Emojis and Markdown markers are stripped strictly before speech synthesis (`window.speechSynthesis.speak` and backend `/api/speech/synthesize`).
+   - **Streaming Sentence Pipeline:** Incoming streams chunk on sentence boundaries; empty/emoji-only chunks are prevented from invoking `speechSynthesis.speak()`; speech cursor is tracked accurately; barge-in cancels speech immediately via `window.speechSynthesis.cancel()`.
 
-2. **n8n Ambiguous Execution Outcomes (`src/openjarvis/tools/n8n.py` & `src/openjarvis/tools/approval_store.py`):**
-   - **Explicit `outcome_unknown` State:** Added `STATUS_OUTCOME_UNKNOWN = "outcome_unknown"` to `ApprovalStore`.
-   - **No Automatic Approval Restoration on Network Timeout:** Socket read timeouts or connection resets occurring during or after request payload transmission transition to `STATUS_OUTCOME_UNKNOWN`. The approval is **NEVER** restored to `approved`, preventing dangerous duplicate executions (e.g. charging customers twice or firing duplicate automated workflows).
-   - **Failure Boundary Classification (`classify_network_failure`):** Distinguishes failures known to occur before request bytes were transmitted (DNS lookup failure, connection refused before handshake) from ambiguous post-transmission errors (socket timeout, read timeout, HTTP 502/504). Pre-transmission failures safely revert to `approved`; ambiguous errors transition to `outcome_unknown`.
-   - **Reconciliation Engine:** Implemented `N8nClient.reconcile_workflow_execution()` and `N8nTool` action `"reconcile"`. Queries the n8n execution API to inspect actual execution state before allowing retry or resolution. If confirmed completed, transitions to `STATUS_EXECUTED`; if confirmed never started, transitions to `STATUS_APPROVED`; if failed, transitions to `STATUS_FAILED`.
-   - **Idempotency Keys:** Requests now bind unique idempotency keys (using `approval_id` or canonical payload hashes) passed via `X-Idempotency-Key` HTTP headers and payload bodies.
+2. **FORGE Arbitrary Code Execution Hardening (`src/openjarvis/sandbox/verification_runner.py` & `src/openjarvis/workforce/forge_coding.py`):**
+   - **Process Isolation Principle:** Recognized that an executable allowlist alone does NOT provide process isolation against untrusted code in `conftest.py`, pytest plugins, or npm scripts.
+   - **Container Isolation Hardening:** Ephemeral container sandbox enforces `--network none`, `--user 1000:1000`, `--cap-drop=ALL`, `--security-opt no-new-privileges`, `--read-only`, `--tmpfs /tmp:rw,noexec,nosuid,size=64m`, CPU (`2.0`), memory (`1024m`), and process-count (`100`) limits.
+   - **Fail-Closed Untrusted Commands:** When container sandbox is unavailable, untrusted project test suites and inline scripts fail closed with `status="blocked"` and `sandbox_mode="blocked_no_container"`.
+   - **Zero Host Secrets Leaked:** Environment is scrubbed clean of all credentials (`OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*`, `DEEPSEEK_*`, `ATLASCLOUD_*`, `N8N_*`, tokens, passwords, database URLs).
+   - **Symlink Escape & Path Traversal Rejection:** Both working directories and command path arguments are inspected; URL-encoded traversal (`%2e%2e`), UNC paths (`\\`), and Windows drive root escapes are rejected with `VerificationStatus.BLOCKED`.
 
-3. **Deterministic Model Discovery & Test Reliability (`tests/models/test_model_discovery.py`):**
-   - Eliminated all silent dependencies on the developer's local Ollama instance or real cloud API keys.
-   - Replaced ambient unit tests with deterministic mocked responses.
-   - Added explicit test cases for configured but unreachable providers (ConnectionRefused -> `status="offline"`, `connected=False`, `model_count=0`), invalid API keys (HTTP 401 Unauthorized), empty model catalogs (`{"models": []}` -> healthy with 0 models), and rate limits (HTTP 429).
+3. **n8n Ambiguous Execution Outcomes (`src/openjarvis/tools/n8n.py` & `src/openjarvis/tools/approval_store.py`):**
+   - **Explicit `outcome_unknown` State:** Approvals whose post-transmission status is ambiguous transition to `STATUS_OUTCOME_UNKNOWN` and are never auto-restored to `approved`.
+   - **Exact Execution Correlation:** `reconcile_workflow_execution()` correlates executions using workflow ID, `started_after` timestamp, `approval_id`, and `idempotency_key`. Older executions are ignored.
+   - **Accurate State Transitions:** Confirmed completed -> `STATUS_EXECUTED`; in-flight/running -> `STATUS_EXECUTING`; confirmed failed -> `STATUS_FAILED`; authoritatively confirmed never started -> `STATUS_APPROVED` (safe to retry).
+   - **Execution Ledger:** Added `N8nExecutionLedger` tracking dispatch timestamps, idempotency keys, and outcome statuses.
 
-4. **Multi-Agent Test Determinism (`tests/workforce/`):**
-   - Investigated and resolved why Atlas and workforce E2E tests became incomplete when no local LLMs were running: `AtlasOrchestrator` now supports deterministic model selection fixtures during tests.
-   - Tests run reliably in headless, unconfigured CI environments with zero ambient credentials.
+4. **Model Discovery & Capability Policy (`src/openjarvis/models/discovery.py` & `capabilities.py`):**
+   - **HTTP 401 Classification:** HTTP 401 and authentication errors are explicitly classified as `status="auth_error"`, `connected=False`, and `model_count=0` (never `connected=True` or `degraded`).
+   - **Cloud Empty Model List:** Empty model lists from cloud providers are classified as `connected=False` and `status="degraded"`.
+   - **Capability Confidence Policies:** Enforces `CONFIRMED_ONLY`, `DECLARED_OR_CONFIRMED`, and `ALLOW_INFERRED`. Unknown capabilities always evaluate to False.
 
 ---
 

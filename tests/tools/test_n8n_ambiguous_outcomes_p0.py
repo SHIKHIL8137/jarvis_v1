@@ -222,3 +222,70 @@ def test_concurrent_claim_race_single_winner(tmp_path):
     assert results.count(True) == 1
     assert results.count(False) == 19
     assert store.get_action(act.id).status == "executing"
+
+
+def test_reconcile_correlates_by_started_after_and_idempotency_key():
+    """Verify reconciliation ignores older executions and correctly matches via timestamp and key."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+
+    mock_executions = [
+        # Old execution before our request
+        {
+            "id": "exec-old-001",
+            "status": "success",
+            "createdAt": "2026-11-15T10:00:00.000Z",
+            "finished": True,
+        },
+        # Current execution matching our request
+        {
+            "id": "exec-new-002",
+            "status": "running",
+            "createdAt": "2026-11-15T12:00:05.000Z",
+            "finished": False,
+            "customData": {"approval_id": "appr-12345"},
+        },
+    ]
+
+    with patch.object(client, "_make_request", return_value={"data": mock_executions}):
+        # Request with started_after pointing to 11:59:00
+        started_after_ts = 1794743940.0  # ~11:59:00 on Nov 15 2026
+        # Old execution is at 10:00 (1794736800.0), so it should be skipped
+        # New execution matches timestamp and customData
+        res = client.reconcile_workflow_execution(
+            workflow_id="wf-test",
+            started_after=started_after_ts,
+            approval_id="appr-12345",
+        )
+        assert res["found"] is True
+        assert res["execution_id"] == "exec-new-002"
+        assert res["status"] == "running"
+        assert res["finished"] is False
+
+
+def test_execution_ledger_tracks_attempts_and_outcomes(tmp_path):
+    """Execution ledger tracks dispatch and outcome records for full auditability."""
+    store = ApprovalStore(db_path=tmp_path / "ledger_test.db")
+    tool = N8nTool(approval_store=store)
+
+    payload = {"k": "v"}
+    canon_hash = _canonical_payload_hash(payload)
+    perm_key = f"n8n:workflow:ledger_wf:{canon_hash}"
+
+    act = store.queue_action(
+        action_type="n8n_execute_workflow",
+        description="Execute workflow ledger_wf",
+        payload=payload,
+        permission_key=perm_key,
+        tier=TIER_HIGH,
+    )
+    store.approve_action(act.id)
+
+    with patch.object(tool.client, "execute_workflow", return_value={"id": "exec-999", "status": "running"}):
+        res = tool.execute(action="execute_workflow", workflow_id="ledger_wf", payload=payload, approval_id=act.id)
+        assert res.success is True
+
+    entry = tool._ledger.get_entry(act.id)
+    assert entry is not None
+    assert entry["target"] == "ledger_wf"
+    assert entry["status"] == "executed"
+    assert entry["execution_id"] == "exec-999"

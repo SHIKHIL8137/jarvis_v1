@@ -65,6 +65,72 @@ def _canonical_payload_hash(payload: Any) -> str:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
 
+def _parse_timestamp(val: Any) -> Optional[float]:
+    """Parse ISO timestamp string or epoch (seconds/milliseconds) to float epoch seconds."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return val / 1000.0 if val > 1e11 else float(val)
+    if isinstance(val, str):
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            try:
+                return float(val)
+            except Exception:
+                return None
+    return None
+
+
+class N8nExecutionLedger:
+    """Thread-safe ledger tracking workflow and webhook dispatch attempts and reconciliation outcomes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: Dict[str, Dict[str, Any]] = {}
+
+    def record_dispatch(
+        self,
+        approval_id: str,
+        target_type: str,
+        target: str,
+        payload_hash: str,
+        idempotency_key: str,
+    ) -> None:
+        with self._lock:
+            self._entries[approval_id] = {
+                "approval_id": approval_id,
+                "target_type": target_type,
+                "target": target,
+                "payload_hash": payload_hash,
+                "idempotency_key": idempotency_key,
+                "dispatched_at": time.time(),
+                "status": "in_flight",
+                "execution_id": None,
+                "error": None,
+            }
+
+    def record_outcome(
+        self,
+        approval_id: str,
+        status: str,
+        execution_id: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            if approval_id in self._entries:
+                self._entries[approval_id]["status"] = status
+                if execution_id:
+                    self._entries[approval_id]["execution_id"] = execution_id
+                if error:
+                    self._entries[approval_id]["error"] = error
+
+    def get_entry(self, approval_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return dict(self._entries[approval_id]) if approval_id in self._entries else None
+
+
 def classify_network_failure(exc: Exception) -> str:
     """Classify exception into:
     - 'pre_transmission': Definitively failed before request bytes were transmitted (DNS error, connection refused, SSL handshake).
@@ -408,8 +474,13 @@ class N8nClient:
         self,
         workflow_id: str,
         started_after: Optional[float] = None,
+        approval_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Query n8n execution list to determine if a workflow executed or is currently executing."""
+        """Query n8n execution list to determine if a workflow executed or is currently executing.
+
+        Correlates against workflow_id, started_after timestamp, approval_id, and idempotency_key.
+        """
         clean_id = _sanitize_path(workflow_id).lstrip("/")
         endpoint = f"/rest/executions?workflowId={clean_id}" if not self.api_key else f"/api/v1/executions?workflowId={clean_id}"
         try:
@@ -428,17 +499,57 @@ class N8nClient:
         if not data:
             return {"reconciled": True, "found": False, "status": "not_executed"}
 
-        # Most recent execution for this workflow
-        latest = data[0]
-        exec_id = str(latest.get("id", ""))
-        exec_status = str(latest.get("status", "unknown"))
-        finished = bool(latest.get("finished", False))
+        matching_execution = None
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id", ""))
+
+            # Check idempotency / approval key in metadata or customData if present
+            custom_data = item.get("customData") or item.get("metadata") or {}
+            custom_str = json.dumps(custom_data) if isinstance(custom_data, (dict, list)) else str(custom_data)
+
+            has_key_match = False
+            if idempotency_key and (idempotency_key in custom_str or item_id == idempotency_key):
+                has_key_match = True
+            if approval_id and (approval_id in custom_str or item_id == approval_id):
+                has_key_match = True
+
+            # Check started_after timestamp
+            exec_time = _parse_timestamp(item.get("startedAt") or item.get("createdAt"))
+            time_matches = True
+            if started_after is not None and exec_time is not None:
+                # Execution started before our action (allow 2.0s clock skew)
+                if exec_time < (started_after - 2.0):
+                    time_matches = False
+
+            if has_key_match:
+                matching_execution = item
+                break
+            elif time_matches and matching_execution is None:
+                matching_execution = item
+
+        if not matching_execution:
+            return {"reconciled": True, "found": False, "status": "not_executed"}
+
+        exec_id = str(matching_execution.get("id", ""))
+        raw_status = str(matching_execution.get("status", "unknown")).lower()
+        finished = bool(matching_execution.get("finished", False))
+
+        if raw_status in ("success", "finished") or (finished and raw_status not in ("error", "failed", "crashed")):
+            norm_status = "success"
+        elif raw_status in ("running", "waiting", "executing") or (not finished and raw_status not in ("error", "failed", "crashed")):
+            norm_status = "running"
+        elif raw_status in ("error", "failed", "crashed"):
+            norm_status = "failed"
+        else:
+            norm_status = raw_status
 
         return {
             "reconciled": True,
             "found": True,
             "execution_id": exec_id,
-            "status": exec_status,
+            "status": norm_status,
             "finished": finished,
         }
 
@@ -470,6 +581,7 @@ class N8nTool(BaseTool):
     ) -> None:
         self.client = N8nClient(base_url=base_url, api_key=api_key)
         self._approval_store = approval_store or ApprovalStore()
+        self._ledger = N8nExecutionLedger()
 
     @property
     def spec(self) -> ToolSpec:
@@ -583,9 +695,21 @@ class N8nTool(BaseTool):
                     )
 
                 # Atomically claimed in STATUS_EXECUTING
+                self._ledger.record_dispatch(
+                    approval_id=action_obj.id,
+                    target_type="workflow",
+                    target=clean_id,
+                    payload_hash=canon_hash,
+                    idempotency_key=action_obj.id,
+                )
                 try:
                     res = self.client.execute_workflow(clean_id, data=payload, idempotency_key=action_obj.id)
                     self._approval_store.complete_approval_execution(action_obj.id, success=True)
+                    self._ledger.record_outcome(
+                        action_obj.id,
+                        status=STATUS_EXECUTED,
+                        execution_id=str(res.get("id", "")) if isinstance(res, dict) else None,
+                    )
                     return ToolResult(
                         tool_name="n8n",
                         content=f"Workflow '{clean_id}' executed: {json.dumps(res, indent=2)}",
@@ -593,6 +717,7 @@ class N8nTool(BaseTool):
                     )
                 except Exception as exec_err:
                     failure_cat = classify_network_failure(exec_err)
+                    self._ledger.record_outcome(action_obj.id, status=failure_cat, error=str(exec_err))
                     if failure_cat == "pre_transmission":
                         self._approval_store.complete_approval_execution(
                             action_obj.id, success=False, error=str(exec_err), pre_execution_failure=True
@@ -647,9 +772,17 @@ class N8nTool(BaseTool):
                     )
 
                 # Atomically claimed in STATUS_EXECUTING
+                self._ledger.record_dispatch(
+                    approval_id=action_obj.id,
+                    target_type="webhook",
+                    target=clean_path,
+                    payload_hash=canon_hash,
+                    idempotency_key=action_obj.id,
+                )
                 try:
                     res = self.client.trigger_webhook(clean_path, data=payload, idempotency_key=action_obj.id)
                     self._approval_store.complete_approval_execution(action_obj.id, success=True)
+                    self._ledger.record_outcome(action_obj.id, status=STATUS_EXECUTED)
                     return ToolResult(
                         tool_name="n8n",
                         content=f"Webhook '{clean_path}' triggered: {json.dumps(res, indent=2)}",
@@ -657,6 +790,7 @@ class N8nTool(BaseTool):
                     )
                 except Exception as exec_err:
                     failure_cat = classify_network_failure(exec_err)
+                    self._ledger.record_outcome(action_obj.id, status=failure_cat, error=str(exec_err))
                     if failure_cat == "pre_transmission":
                         self._approval_store.complete_approval_execution(
                             action_obj.id, success=False, error=str(exec_err), pre_execution_failure=True
@@ -690,13 +824,25 @@ class N8nTool(BaseTool):
                     if len(parts) >= 3:
                         target_wf = parts[2]
 
+                started_after_sec = _parse_timestamp(act.created_at) if act.created_at else None
+
                 if target_wf:
-                    rec_res = self.client.reconcile_workflow_execution(target_wf)
+                    rec_res = self.client.reconcile_workflow_execution(
+                        target_wf,
+                        started_after=started_after_sec,
+                        approval_id=approval_id,
+                        idempotency_key=approval_id,
+                    )
                     if rec_res.get("found"):
                         st_name = str(rec_res.get("status", "")).lower()
-                        new_st = STATUS_EXECUTED if st_name in ("success", "running", "waiting") else STATUS_FAILED
+                        if st_name in ("success", "finished"):
+                            new_st = STATUS_EXECUTED
+                        elif st_name in ("running", "waiting", "executing"):
+                            new_st = STATUS_EXECUTING
+                        else:
+                            new_st = STATUS_FAILED
                     elif rec_res.get("reconciled") and not rec_res.get("found"):
-                        new_st = STATUS_APPROVED  # Confirmed never started; safe to retry
+                        new_st = STATUS_APPROVED  # Authoritatively confirmed never started; safe to retry
                     else:
                         return ToolResult(
                             tool_name="n8n",
@@ -707,6 +853,11 @@ class N8nTool(BaseTool):
                     new_st = STATUS_FAILED
 
                 ok, msg = self._approval_store.reconcile_approval(approval_id, new_st)
+                self._ledger.record_outcome(
+                    approval_id,
+                    status=new_st,
+                    execution_id=rec_res.get("execution_id") if target_wf and rec_res.get("found") else None,
+                )
                 return ToolResult(
                     tool_name="n8n",
                     content=f"Reconciliation for approval '{approval_id}': {msg}",

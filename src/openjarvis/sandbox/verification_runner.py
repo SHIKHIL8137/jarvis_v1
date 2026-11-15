@@ -200,7 +200,7 @@ class IsolatedVerificationRunner:
         tokens: List[str],
         allowed_dirs: List[Path],
     ) -> Optional[str]:
-        """Validate that neither the working directory nor any path in arguments escapes authorized roots via symlinks or traversal."""
+        """Validate that neither the working directory nor any path in arguments escapes authorized roots via symlinks, traversal, UNC paths, or encoded sequences."""
         # 1. Check if cwd is a symlink resolving outside allowed dirs
         try:
             real_cwd = resolved_cwd.resolve()
@@ -209,17 +209,39 @@ class IsolatedVerificationRunner:
         except Exception as exc:
             return f"Security boundary violation: cannot resolve working directory: {exc}"
 
-        # 2. Check each token for path traversal and symlink escapes
+        # 2. Check each token for path traversal, UNC paths, and symlink escapes
+        import urllib.parse
         for tok in tokens[1:]:
             clean_tok = tok.strip()
-            # Traversal patterns
+
+            # URL-decode token if encoded
+            try:
+                decoded_tok = urllib.parse.unquote(clean_tok)
+            except Exception:
+                decoded_tok = clean_tok
+
+            # UNC path check (reject network share execution e.g. \\host\share or //host/share)
+            if (
+                clean_tok.startswith("\\\\")
+                or decoded_tok.startswith("\\\\")
+                or clean_tok.startswith("//")
+                or decoded_tok.startswith("//")
+            ):
+                return f"Security boundary violation: UNC paths prohibited in argument '{tok}'"
+
+            # Traversal patterns (raw, lower, and URL-decoded)
+            lower_clean = clean_tok.lower()
+            lower_decoded = decoded_tok.lower()
             if (
                 clean_tok == ".."
                 or clean_tok.startswith("..")
                 or "/.." in clean_tok
                 or "\\.." in clean_tok
+                or "%2e%2e" in lower_clean
+                or ".." in decoded_tok
                 or "/etc/" in clean_tok
-                or "\\Windows\\" in clean_tok
+                or "\\windows\\" in lower_clean
+                or "\\system32\\" in lower_clean
             ):
                 return f"Security boundary violation: path traversal prohibited in argument '{tok}'"
 
@@ -227,10 +249,12 @@ class IsolatedVerificationRunner:
             is_path_like = (
                 any(clean_tok.startswith(p) for p in ("/", "\\", "c:", "C:", "d:", "D:"))
                 or (clean_tok.startswith((".", "./", ".\\")) and ("/" in clean_tok or "\\" in clean_tok))
+                or "/" in clean_tok
+                or "\\" in clean_tok
             )
             if is_path_like:
                 try:
-                    candidate = Path(clean_tok)
+                    candidate = Path(decoded_tok)
                     if not candidate.is_absolute():
                         candidate = (resolved_cwd / candidate)
                     real_candidate = candidate.resolve()
@@ -246,6 +270,7 @@ class IsolatedVerificationRunner:
         cmd: str,
         cwd: str,
         timeout: Optional[float] = None,
+        trusted_environment: bool = False,
     ) -> Dict[str, Any]:
         """Execute a verification command safely with container sandboxing or sanitized host execution.
 
@@ -255,6 +280,7 @@ class IsolatedVerificationRunner:
         t0 = time.time()
         timeout_sec = timeout or self.timeout
         resolved_cwd = Path(cwd).resolve()
+        is_trusted = trusted_environment or (os.environ.get("OPENJARVIS_TRUSTED_ENVIRONMENT", "").lower() in ("1", "true", "yes"))
 
         clean_cmd = cmd.strip()
         if not clean_cmd:
@@ -418,8 +444,30 @@ class IsolatedVerificationRunner:
             except Exception as container_err:
                 logger.warning("Container execution error: %s. Falling back to sanitized host runner.", container_err)
 
-        # 8. Host execution with sanitized environment (zero host credentials)
-        # Note: Executed only for standard test runners (e.g. pytest, vitest) on authorized paths
+        # 8. Fail-closed check: untrusted project test suites executed without container sandbox
+        is_metadata_cmd = any(tok in ("--version", "-V", "-v", "--help", "-h") for tok in tokens[1:]) or (
+            exec_stem == "git" and len(tokens) > 1 and tokens[1] in ("status", "log", "diff", "branch", "--version")
+        )
+        if not container_available and not is_trusted and not is_metadata_cmd:
+            logger.warning("Blocked untrusted project test execution without container sandbox: %s", cmd)
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": (
+                    f"Security policy violation: Verification command '{cmd}' executes untrusted project code or "
+                    f"test runner without container isolation. Execution is blocked because an isolated container "
+                    f"sandbox (Docker/Podman) is unavailable. Executable allowlists do not provide process isolation "
+                    f"against untrusted project code. Set trusted_environment=True or OPENJARVIS_TRUSTED_ENVIRONMENT=1 "
+                    f"to permit host execution in a trusted environment."
+                ),
+                "sandbox_mode": "blocked_no_container",
+            }
+
+        # 9. Host execution with sanitized environment (zero host credentials)
+        # Note: Executed only for standard test runners (e.g. pytest, vitest) on authorized paths when trusted or metadata
         return self._run_on_sanitized_host(tokens, resolved_cwd, timeout_sec, t0, cmd)
 
     def _run_in_container(
@@ -439,6 +487,11 @@ class IsolatedVerificationRunner:
             "run",
             "--rm",
             "--network", "none",
+            "--user", "1000:1000",
+            "--cap-drop=ALL",
+            "--security-opt", "no-new-privileges",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
             "--memory", self.DEFAULT_MEM_LIMIT,
             "--cpus", self.DEFAULT_CPUS,
             "--pids-limit", self.DEFAULT_PIDS_LIMIT,

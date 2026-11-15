@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Square, X } from 'lucide-react';
 import { useAppStore } from '../../lib/store';
 import { transcribeAudio, fetchSpeechHealth } from '../../lib/api';
-import { stripThinkTags } from '../../lib/message-text';
+import { stripThinkTags, toSpeakableText, stripEmojis } from '../../lib/message-text';
 
 type VState = 'starting' | 'listening' | 'hearing' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
@@ -33,18 +33,6 @@ const COLOR: Record<VState, string> = {
   speaking: '#38bdf8',
   error: '#f87171',
 };
-
-/** Plain spoken text: no code, markdown or links. */
-function speakable(raw: string): string {
-  return stripThinkTags(raw)
-    .replace(/```[\s\S]*?(```|$)/g, ' ')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/[#*_>|~]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function encodeWav(chunks: Float32Array[]): Blob {
   const len = chunks.reduce((n, c) => n + c.length, 0);
@@ -78,8 +66,10 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
   const streamState = useAppStore((s) => s.streamState);
   const messages = useAppStore((s) => s.messages);
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-  const reply = speakable(lastAssistant?.content ?? '');
-  const showReply = heard !== '' && reply;
+  const rawContent = lastAssistant?.content ?? '';
+  const displayReply = stripThinkTags(rawContent);
+  const speakableReply = toSpeakableText(rawContent);
+  const showReply = heard !== '' && displayReply.length > 0;
 
   // spoken-text bookkeeping (refs: updated outside render)
   const spokenIdxRef = useRef(0);
@@ -87,7 +77,7 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
   const awaitingReplyRef = useRef(false);
   const streamingRef = useRef(false);
   const replyRef = useRef('');
-  replyRef.current = reply;
+  replyRef.current = speakableReply;
   streamingRef.current = streamState.isStreaming;
   // The reply we are waiting for is the first assistant message after this id.
   const lastIdRef = useRef<string | undefined>(undefined);
@@ -96,8 +86,9 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
   const isNewReply = () => lastIdRef.current !== baseIdRef.current;
 
   const speakChunk = useCallback((text: string) => {
-    if (!text.trim() || !('speechSynthesis' in window)) return;
-    const u = new SpeechSynthesisUtterance(text);
+    const cleaned = stripEmojis(text).trim();
+    if (!cleaned || !('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(cleaned);
     const voices = window.speechSynthesis.getVoices();
     u.voice = voices.find((v) => /en[-_](GB|US|IN)/i.test(v.lang) && /natural|online/i.test(v.name))
       ?? voices.find((v) => /^en/i.test(v.lang)) ?? null;
@@ -122,7 +113,7 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
   // Speak the reply sentence by sentence while it streams in.
   useEffect(() => {
     if (!awaitingReplyRef.current || !isNewReply()) return;
-    const text = reply;
+    const text = speakableReply;
     const rest = text.slice(spokenIdxRef.current);
     const done = !streamState.isStreaming;
     const m = [...rest.matchAll(/[^.!?\n]+[.!?]+(\s|$)|[^\n]+\n/g)];
@@ -133,7 +124,7 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
       spokenIdxRef.current += chunk.length;
     }
     if (stateRef.current === 'thinking' && text) setState('thinking');
-  }, [reply, streamState.isStreaming, speakChunk]);
+  }, [speakableReply, streamState.isStreaming, speakChunk]);
 
   // Back to listening once the reply is fully spoken.
   useEffect(() => {
@@ -292,7 +283,7 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
 
         <div className="w-full text-center space-y-3 min-h-[120px]">
           {heard && <p className="text-base" style={{ color: '#94a3b8' }}>“{heard}”</p>}
-          {showReply && isNewReply() && <p className="text-xl leading-relaxed" style={{ color: '#f1f5f9' }}>{reply.slice(-420)}</p>}
+          {showReply && isNewReply() && <p className="text-xl leading-relaxed" style={{ color: '#f1f5f9' }}>{displayReply.slice(-420)}</p>}
         </div>
       </div>
 

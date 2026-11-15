@@ -8,6 +8,34 @@ export function stripThinkTags(text: string): string {
 }
 
 /**
+ * Unicode emoji matcher covering:
+ * - Regional indicator symbol pairs (country flags)
+ * - Keycap sequences ([0-9#*]\uFE0F?\u20E3)
+ * - Fitzpatrick skin tone modifiers (U+1F3FB - U+1F3FF)
+ * - Dingbats & Miscellaneous Symbols (U+2600 - U+27BF)
+ * - Emoji & Pictograph blocks (U+1F300 - U+1FAFF)
+ * - Compound emojis with Zero-Width Joiners (ZWJ, U+200D) and tag sequences
+ */
+export const EMOJI_REGEX =
+  /(?:\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3|[\u{1F3FB}-\u{1F3FF}]|[\u2600-\u27BF]|[\u{1F300}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F900}-\u{1F9FF}]|[\u{1FA00}-\u{1FAFF}]|\p{Extended_Pictographic}(?:[\uFE0E\uFE0F]|[\u{1F3FB}-\u{1F3FF}]|[\u{E0020}-\u{E007F}])*(?:\u200D(?:\p{Extended_Pictographic}|[\u2600-\u27BF])(?:[\uFE0E\uFE0F]|[\u{1F3FB}-\u{1F3FF}]|[\u{E0020}-\u{E007F}])*)*)/gu;
+
+/**
+ * Remove emoji sequences from text for speech synthesis so screen readers
+ * or browser SpeechSynthesis do not pronounce emoji Unicode descriptions.
+ */
+export function stripEmojis(text: string): string {
+  let cleaned = text.replace(EMOJI_REGEX, '');
+  // Clean up any stray variation selectors, zero-width joiners or unattached modifiers
+  cleaned = cleaned.replace(/[\uFE0E\uFE0F\u200D]/g, '');
+  cleaned = cleaned.replace(/[\u{1F3FB}-\u{1F3FF}]/gu, '');
+  // Clean up whitespace before punctuation (e.g. "Great work !" -> "Great work!")
+  cleaned = cleaned.replace(/\s+([.!?,;:])/g, '$1');
+  // Collapse multiple spaces into one
+  cleaned = cleaned.replace(/[ \t]{2,}/g, ' ');
+  return cleaned.trim();
+}
+
+/**
  * Turn a (usually markdown) answer into text that sounds right when read aloud: no emphasis
  * markers, heading hashes, list bullets, link syntax, bare URLs or emoji, code blocks replaced
  * by a short note, and a pause after lines that lack final punctuation.
@@ -22,7 +50,7 @@ export function toSpeakableText(text: string): string {
   t = t.replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, '');
   t = t.replace(/\*{1,3}|~~/g, '');
   t = t.replace(/(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, '');
-  t = t.replace(/[\p{Extended_Pictographic}️‍]/gu, '');
+  t = stripEmojis(t);
   const lines = t
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -30,5 +58,5 @@ export function toSpeakableText(text: string): string {
   // Only separate multiple lines; a single line is spoken as written.
   const sentences =
     lines.length > 1 ? lines.map((l) => (/[.!?:;]$/.test(l) ? l : `${l}.`)) : lines;
-  return sentences.join(' ').replace(/\s{2,}/g, ' ').trim();
+  return sentences.join(' ').replace(/\s+([.!?,;:])/g, '$1').replace(/\s{2,}/g, ' ').trim();
 }

@@ -422,8 +422,8 @@ class ApprovalStore:
                     f"Cannot reconcile approval with status '{current_status}'. "
                     f"Only '{STATUS_OUTCOME_UNKNOWN}' approvals require reconciliation."
                 )
-            if resolved_status not in (STATUS_EXECUTED, STATUS_FAILED, STATUS_APPROVED):
-                return False, f"Invalid resolved status '{resolved_status}'. Must be executed, failed, or approved."
+            if resolved_status not in (STATUS_EXECUTED, STATUS_FAILED, STATUS_APPROVED, STATUS_EXECUTING):
+                return False, f"Invalid resolved status '{resolved_status}'. Must be executed, failed, approved, or executing."
 
             now_iso = datetime.now(timezone.utc).isoformat()
             self._conn.execute(

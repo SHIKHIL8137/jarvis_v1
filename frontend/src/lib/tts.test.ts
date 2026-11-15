@@ -91,6 +91,14 @@ describe('shared voice output', () => {
     expect(useTtsStore.getState().speakingId).toBe('m1');
   });
 
+  it('strips emojis before sending text to speech synthesis backend', async () => {
+    synth.mockResolvedValue(new Blob(['wav']));
+
+    await useTtsStore.getState().speak('m-emoji', "That's great! 😊 🚀");
+
+    expect(synth).toHaveBeenCalledWith("That's great!", expect.any(Object));
+  });
+
   it('starting a second message stops the first instead of overlapping it', async () => {
     synth.mockResolvedValue(new Blob(['wav']));
 

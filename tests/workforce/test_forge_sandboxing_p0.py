@@ -150,23 +150,53 @@ def test_verification_statuses_are_distinct(tmp_path):
         assert res_passed["status"] == VerificationOutcome.PASSED.value
         assert res_passed["passed"] is True
 
-        # 3. Failed (non-zero exit code)
+        # 3. Failed (non-zero exit code in trusted environment)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="Test failures: 2", stderr="")
-            res_failed = runner.execute_verification_command("pytest tests/", cwd=str(tmp_path))
+            res_failed = runner.execute_verification_command("pytest tests/", cwd=str(tmp_path), trusted_environment=True)
             assert res_failed["status"] == VerificationOutcome.FAILED.value
             assert res_failed["passed"] is False
 
-        # 4. Inconclusive (timeout)
+        # 4. Inconclusive (timeout in trusted environment)
         import subprocess
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=5.0)):
-            res_timeout = runner.execute_verification_command("pytest tests/", cwd=str(tmp_path))
+            res_timeout = runner.execute_verification_command("pytest tests/", cwd=str(tmp_path), trusted_environment=True)
             assert res_timeout["status"] == VerificationOutcome.INCONCLUSIVE.value
             assert res_timeout["passed"] is False
 
 
+def test_untrusted_project_test_fails_closed_without_container(tmp_path):
+    """Untrusted project tests (e.g. pytest tests/) must fail closed with status='blocked' when container is unavailable."""
+    runner = IsolatedVerificationRunner()
+
+    with patch.object(runner, "is_container_runtime_available", return_value=False):
+        res = runner.execute_verification_command("pytest tests/", cwd=str(tmp_path))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert res["sandbox_mode"] == "blocked_no_container"
+        assert "Security policy violation" in res["output"]
+
+
+def test_url_encoded_traversal_and_unc_escapes_blocked(tmp_path):
+    """URL-encoded traversal (%2e%2e) and UNC paths (\\\\) must be blocked immediately."""
+    runner = IsolatedVerificationRunner()
+
+    with patch.object(runner, "is_container_runtime_available", return_value=False):
+        # 1. URL encoded traversal
+        res_encoded = runner.execute_verification_command("pytest %2e%2e/%2e%2e/etc/passwd", cwd=str(tmp_path))
+        assert res_encoded["passed"] is False
+        assert res_encoded["status"] == VerificationOutcome.BLOCKED.value
+        assert "path traversal prohibited" in res_encoded["output"]
+
+        # 2. UNC path escape
+        res_unc = runner.execute_verification_command("pytest \\\\attacker\\share\\test.py", cwd=str(tmp_path))
+        assert res_unc["passed"] is False
+        assert res_unc["status"] == VerificationOutcome.BLOCKED.value
+        assert "UNC paths prohibited" in res_unc["output"]
+
+
 def test_container_sandbox_isolation_flags(tmp_path):
-    """When container sandbox is available, runner passes isolated network and resource limits."""
+    """When container sandbox is available, runner passes isolated network, non-root user, cap drops, and resource limits."""
     runner = IsolatedVerificationRunner()
 
     with patch.object(runner, "is_container_runtime_available", return_value=True):
@@ -180,6 +210,14 @@ def test_container_sandbox_isolation_flags(tmp_path):
                 args = mock_run.call_args[0][0]
                 assert "--network" in args
                 assert "none" in args
+                assert "--user" in args
+                assert "1000:1000" in args
+                assert "--cap-drop=ALL" in args
+                assert "--security-opt" in args
+                assert "no-new-privileges" in args
+                assert "--read-only" in args
+                assert "--tmpfs" in args
+                assert "/tmp:rw,noexec,nosuid,size=64m" in args
                 assert "--memory" in args
                 assert "--cpus" in args
                 assert "--pids-limit" in args
