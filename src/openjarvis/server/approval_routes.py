@@ -62,6 +62,13 @@ async def approve_action(action_id: str, remember: bool = False) -> Dict[str, An
     action = store.get_action(action_id)
     if action is None:
         raise HTTPException(status_code=404, detail="Action not found")
+
+    # Sensitive and irreversible actions require fresh explicit approval every time;
+    # never allow remember=True to bypass high-tier operations.
+    if remember and (action.tier == "high" or action.action_type in ("system_admin", "code_execute", "channel_send")):
+        remember = False
+        logger.info("Ignoring remember=True for sensitive action %s", action_id)
+
     granted = ""
     folder = (action.payload or {}).get("folder", "")
     if remember and (action.payload or {}).get("desktop"):

@@ -1277,3 +1277,184 @@ export async function setInferenceSource(
 export const stageInferenceSource = (
   src: InferenceSource & { apiKey?: string },
 ): Promise<void> => setInferenceSource(src, { pending: true });
+
+// ---------------------------------------------------------------------------
+// Background Autonomous Tasks & Routines & Capabilities
+// ---------------------------------------------------------------------------
+
+export type BackgroundTask = {
+  task_id: string;
+  goal: string;
+  capability_profile: string;
+  status: string;
+  current_step_index: number;
+  total_steps: number;
+  progress_pct: number;
+  created_at: number;
+  updated_at: number;
+  completed_at?: number;
+  error?: string;
+};
+
+export async function fetchBackgroundTasks(status?: string): Promise<BackgroundTask[]> {
+  const url = status ? `/v1/tasks?status=${encodeURIComponent(status)}` : '/v1/tasks';
+  const res = await apiFetch(url);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.tasks ?? [];
+}
+
+export async function pauseBackgroundTask(taskId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/tasks/${taskId}/pause`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function resumeBackgroundTask(taskId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/tasks/${taskId}/resume`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function cancelBackgroundTask(taskId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/tasks/${taskId}/cancel`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function steerBackgroundTask(taskId: string, guidance: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/tasks/${taskId}/steer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guidance }),
+  });
+  return res.ok;
+}
+
+export type RoutineItem = {
+  id: string;
+  name: string;
+  description: string;
+  routine_type: string;
+  interval_seconds?: number;
+  cron_expr?: string;
+  action_type: string;
+  payload: Record<string, any>;
+  is_active: boolean;
+  quiet_hours_behavior: string;
+  next_run_at?: string;
+  last_run_at?: string;
+  last_status?: string;
+};
+
+export async function fetchRoutines(): Promise<RoutineItem[]> {
+  const res = await apiFetch('/v1/routines');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.routines ?? [];
+}
+
+export async function pauseRoutine(routineId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/routines/${routineId}/pause`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function resumeRoutine(routineId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/routines/${routineId}/resume`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function runRoutineNow(routineId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/routines/${routineId}/run`, { method: 'POST' });
+  return res.ok;
+}
+
+export async function deleteRoutine(routineId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/routines/${routineId}`, { method: 'DELETE' });
+  return res.ok;
+}
+
+export type SystemCapabilities = {
+  system: string;
+  version: string;
+  hardware: {
+    os: string;
+    cpu_name: string;
+    cpu_logical_cores: number;
+    ram_total_gb: number;
+    ram_available_gb: number;
+    ram_percent_used?: number;
+    gpu_name?: string;
+    gpu_vram_total_mb?: number;
+    gpu_vram_free_mb?: number;
+    gpu_available: boolean;
+  };
+  tools: {
+    count: number;
+    list: string[];
+  };
+  speech: {
+    supported: boolean;
+    wake_word_supported: boolean;
+    wake_phrase: string;
+    wake_active: boolean;
+    session_state: string;
+    stt_engine: string;
+    tts_engine: string;
+    echo_guard: boolean;
+  };
+  security: {
+    permission_tiers: string[];
+    approval_gateway_enforced: boolean;
+    fresh_approval_required_for_sensitive: boolean;
+    action_journal_enabled: boolean;
+    file_compensation_undo: boolean;
+  };
+};
+
+export async function fetchSystemCapabilities(): Promise<SystemCapabilities | null> {
+  const res = await apiFetch('/v1/capabilities');
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export type MemoryFact = {
+  id: string;
+  text: string;
+  source: string;
+  created_at: number;
+  trust: string;
+  category: string;
+  confidence: number;
+  pinned: boolean;
+};
+
+export async function fetchMemoryFacts(category?: string, query?: string): Promise<MemoryFact[]> {
+  const params = new URLSearchParams();
+  if (category && category !== 'all') params.set('category', category);
+  if (query) params.set('query', query);
+  const res = await apiFetch(`/v1/memory/facts?${params.toString()}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.facts ?? [];
+}
+
+export async function createMemoryFact(fact: { text: string; category?: string; pinned?: boolean }): Promise<boolean> {
+  const res = await apiFetch('/v1/memory/facts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fact),
+  });
+  return res.ok;
+}
+
+export async function deleteMemoryFact(factId: string): Promise<boolean> {
+  const res = await apiFetch(`/v1/memory/facts/${factId}`, { method: 'DELETE' });
+  return res.ok;
+}
+
+export async function pinMemoryFact(factId: string, pinned: boolean): Promise<boolean> {
+  const res = await apiFetch(`/v1/memory/facts/${factId}/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned }),
+  });
+  return res.ok;
+}

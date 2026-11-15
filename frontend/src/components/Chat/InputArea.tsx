@@ -556,7 +556,10 @@ export function InputArea() {
   ]);
 
   // Voice mode: it hands us transcribed speech to send, and can interrupt a reply.
-  const [voiceOpen, setVoiceOpen] = useState(false);
+  // `?voice=1` is how the "Hey Jarvis" wake-word listener opens the UI.
+  const [voiceOpen, setVoiceOpen] = useState(
+    () => new URLSearchParams(window.location.search).get('voice') === '1',
+  );
   const voiceSendRef = useRef(false);
   useEffect(() => {
     const onSend = (e: Event) => {

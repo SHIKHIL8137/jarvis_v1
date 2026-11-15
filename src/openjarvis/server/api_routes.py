@@ -54,6 +54,24 @@ class MemoryIndexRequest(BaseModel):
     path: str
 
 
+class FactCreateRequest(BaseModel):
+    text: str
+    category: str = "facts"
+    source: str = "user"
+    confidence: float = 1.0
+    pinned: bool = False
+
+
+class FactUpdateRequest(BaseModel):
+    text: Optional[str] = None
+    category: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+class FactPinRequest(BaseModel):
+    pinned: bool = True
+
+
 class BudgetLimitsRequest(BaseModel):
     max_tokens_per_day: Optional[int] = None
     max_requests_per_hour: Optional[int] = None
@@ -391,6 +409,117 @@ def memory_index(req: MemoryIndexRequest, request: Request):
                 "documents with indexable text"
             )
         return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _get_fact_store(request: Request):
+    store = getattr(request.app.state, "fact_store", None)
+    if store is None:
+        from openjarvis.memory.store import create_fact_store
+
+        store = create_fact_store()
+        request.app.state.fact_store = store
+    return store
+
+
+def _serialize_fact(fact) -> dict:
+    return {
+        "id": getattr(fact, "id", ""),
+        "text": getattr(fact, "text", ""),
+        "source": getattr(fact, "source", ""),
+        "created_at": getattr(fact, "created_at", 0.0),
+        "trust": getattr(fact, "trust", ""),
+        "category": getattr(fact, "category", "facts"),
+        "confidence": getattr(fact, "confidence", 1.0),
+        "pinned": getattr(fact, "pinned", False),
+        "last_used_at": getattr(fact, "last_used_at", 0.0),
+    }
+
+
+@memory_router.get("/facts")
+def list_facts(
+    request: Request,
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: int = 100,
+):
+    """List categorized memory facts with optional filtering."""
+    store = _get_fact_store(request)
+    try:
+        facts = store.list_categorized(category=category, query=query, limit=limit)
+        return {"facts": [_serialize_fact(f) for f in facts]}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@memory_router.post("/facts")
+def add_fact(req: FactCreateRequest, request: Request):
+    """Add a new categorized fact."""
+    store = _get_fact_store(request)
+    try:
+        added = store.add(
+            text=req.text,
+            source=req.source,
+            category=req.category,
+            confidence=req.confidence,
+            pinned=req.pinned,
+        )
+        if not added:
+            return {"status": "deduplicated", "message": "Fact already exists"}
+        facts = store.list()
+        last = facts[-1] if facts else None
+        return {"status": "created", "fact": _serialize_fact(last) if last else None}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@memory_router.put("/facts/{fact_id}")
+def update_fact(fact_id: str, req: FactUpdateRequest, request: Request):
+    """Update a memory fact."""
+    store = _get_fact_store(request)
+    try:
+        ok = store.update_fact(
+            fact_id=fact_id,
+            text=req.text,
+            category=req.category,
+            pinned=req.pinned,
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="Fact not found")
+        return {"status": "updated", "id": fact_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@memory_router.delete("/facts/{fact_id}")
+def delete_fact(fact_id: str, request: Request):
+    """Delete a memory fact."""
+    store = _get_fact_store(request)
+    try:
+        ok = store.delete_fact(fact_id=fact_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Fact not found")
+        return {"status": "deleted", "id": fact_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@memory_router.post("/facts/{fact_id}/pin")
+def pin_fact(fact_id: str, req: FactPinRequest, request: Request):
+    """Pin or unpin a memory fact."""
+    store = _get_fact_store(request)
+    try:
+        ok = store.pin_fact(fact_id=fact_id, pinned=req.pinned)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Fact not found")
+        return {"status": "ok", "id": fact_id, "pinned": req.pinned}
     except HTTPException:
         raise
     except Exception as exc:
@@ -1190,6 +1319,80 @@ async def tts_health(request: Request):
     }
 
 
+class AudioDeviceConfigRequest(BaseModel):
+    input_device: Optional[int] = None
+    output_device: Optional[int] = None
+
+
+@speech_router.get("/devices")
+async def get_speech_devices():
+    """List available input microphones and output speakers."""
+    from openjarvis.speech.voice_io import list_audio_devices
+
+    return list_audio_devices()
+
+
+@speech_router.post("/devices")
+async def configure_speech_devices(req: AudioDeviceConfigRequest):
+    """Configure active audio input/output devices."""
+    from openjarvis.speech.session_manager import get_voice_session_manager
+
+    mgr = get_voice_session_manager()
+    if req.input_device is not None:
+        mgr.input_device = req.input_device
+    if req.output_device is not None:
+        mgr.output_device = req.output_device
+    return {"status": "updated", "input_device": mgr.input_device, "output_device": mgr.output_device}
+
+
+@speech_router.get("/state")
+async def get_speech_state():
+    """Return the current voice assistant lifecycle state and echo-guard status."""
+    from openjarvis.speech.echo_guard import get_echo_guard
+    from openjarvis.speech.session_manager import get_voice_session_manager
+
+    mgr = get_voice_session_manager()
+    guard = get_echo_guard()
+    return {
+        "state": mgr.state.value,
+        "is_playing": guard.is_playing,
+        "is_guard_interval": guard.is_in_guard_interval(),
+        "input_device": mgr.input_device,
+        "output_device": mgr.output_device,
+        "wake_word_model": mgr.wake_word_model,
+        "wake_threshold": mgr.wake_threshold,
+    }
+
+
+@speech_router.post("/interrupt")
+async def interrupt_speech():
+    """Immediately stop TTS speech playback or recording (barge-in)."""
+    from openjarvis.speech.echo_guard import get_echo_guard
+
+    interrupted = get_echo_guard().interrupt()
+    return {"interrupted": interrupted}
+
+
+@speech_router.post("/wake/start")
+async def start_wake_word():
+    """Start local wake-word listener."""
+    from openjarvis.speech.session_manager import get_voice_session_manager
+
+    mgr = get_voice_session_manager()
+    mgr.start_wake_listener()
+    return {"status": "started", "state": mgr.state.value}
+
+
+@speech_router.post("/wake/stop")
+async def stop_wake_word():
+    """Stop local wake-word listener and active recording."""
+    from openjarvis.speech.session_manager import get_voice_session_manager
+
+    mgr = get_voice_session_manager()
+    mgr.stop_listening()
+    return {"status": "stopped", "state": mgr.state.value}
+
+
 # ---- Feedback routes ----
 
 feedback_router = APIRouter(prefix="/v1/feedback", tags=["feedback"])
@@ -1293,8 +1496,14 @@ def include_all_routes(app) -> None:
     from openjarvis.server.approval_routes import (
         router as approval_router,  # noqa: PLC0415
     )
+    from openjarvis.server.routine_routes import routine_router
+    from openjarvis.server.security_routes import router as security_router
+    from openjarvis.server.tasks_router import tasks_router
 
     app.include_router(approval_router)
+    app.include_router(security_router)
+    app.include_router(tasks_router)
+    app.include_router(routine_router)
     app.include_router(agents_router)
     app.include_router(memory_router)
     app.include_router(traces_router)

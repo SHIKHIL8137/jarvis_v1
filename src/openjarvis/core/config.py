@@ -1636,6 +1636,16 @@ class SpeechConfig:
     tts_backend: str = "kokoro"  # "kokoro", "openai_tts", "cartesia", "elevenlabs"
     voice_id: str = "bm_george"
     voice_speed: float = 1.0
+    wake_word_enabled: bool = True
+    wake_word_model: str = "hey_jarvis"
+    wake_word_threshold: float = 0.5
+    continuous_listening: bool = False
+    echo_protection_enabled: bool = True
+    post_playback_guard_ms: int = 500
+    input_device: Optional[int] = None
+    output_device: Optional[int] = None
+    volume: float = 1.0
+    instant_ack_enabled: bool = True
 
 
 @dataclass(slots=True)

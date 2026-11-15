@@ -124,7 +124,21 @@ def _cross_process_lock(lock_path: Path) -> Iterator[None]:
         f.close()
 
 
-@dataclass(slots=True)
+MEMORY_CATEGORIES = frozenset(
+    {
+        "preferences",
+        "projects",
+        "environment",
+        "tools",
+        "decisions",
+        "tasks",
+        "goals",
+        "facts",
+    }
+)
+
+
+@dataclass
 class Fact:
     """A single durable memory entry."""
 
@@ -133,6 +147,17 @@ class Fact:
     created_at: float = 0.0
     # Provenance tier: one of the TRUST_* constants above ("" for legacy rows).
     trust: str = ""
+    id: str = ""
+    category: str = "facts"
+    confidence: float = 1.0
+    pinned: bool = False
+    last_used_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            import uuid
+
+            self.id = uuid.uuid4().hex[:12]
 
     @property
     def trusted_for_recall(self) -> bool:
@@ -266,6 +291,11 @@ class LocalFactStore(FactStore):
                     source=str(obj.get("source", "")),
                     created_at=float(obj.get("created_at", 0.0) or 0.0),
                     trust=str(obj.get("trust", "")),
+                    id=str(obj.get("id", "")) or fact_text[:12],
+                    category=str(obj.get("category", "facts")),
+                    confidence=float(obj.get("confidence", 1.0) or 1.0),
+                    pinned=bool(obj.get("pinned", False)),
+                    last_used_at=float(obj.get("last_used_at", 0.0) or 0.0),
                 )
             )
         return facts
@@ -304,7 +334,15 @@ class LocalFactStore(FactStore):
 
     # -- FactStore API ------------------------------------------------------
 
-    def add(self, text: str, source: str = "", trust: str = "") -> bool:
+    def add(
+        self,
+        text: str,
+        source: str = "",
+        trust: str = "",
+        category: str = "facts",
+        confidence: float = 1.0,
+        pinned: bool = False,
+    ) -> bool:
         text = (text or "").strip()
         if not text:
             return False
@@ -325,7 +363,15 @@ class LocalFactStore(FactStore):
                     self._flush()
                 return False  # dedupe
             self._facts.append(
-                Fact(text=text, source=source, created_at=time.time(), trust=trust)
+                Fact(
+                    text=text,
+                    source=source,
+                    created_at=time.time(),
+                    trust=trust,
+                    category=category,
+                    confidence=confidence,
+                    pinned=pinned,
+                )
             )
             # Enforce the cap by evicting the oldest entries. max_facts is
             # always positive (validated in __init__), so this slice can't
@@ -335,6 +381,57 @@ class LocalFactStore(FactStore):
                 self._facts = self._facts[-self._max_facts :]
             self._flush()
         return True
+
+    def list_categorized(
+        self,
+        category: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Fact]:
+        with self._lock, _cross_process_lock(self._lock_path()):
+            self._sync_from_disk_locked()
+            results = list(self._facts)
+            if category:
+                results = [f for f in results if f.category == category]
+            if query:
+                q_low = query.lower()
+                results = [f for f in results if q_low in f.text.lower()]
+            results.sort(key=lambda f: (not f.pinned, -f.created_at))
+            return results[:limit]
+
+    def update_fact(
+        self,
+        fact_id: str,
+        text: Optional[str] = None,
+        category: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> bool:
+        with self._lock, _cross_process_lock(self._lock_path()):
+            self._sync_from_disk_locked()
+            target = next((f for f in self._facts if f.id == fact_id), None)
+            if not target:
+                return False
+            if text is not None:
+                target.text = text.strip()
+            if category is not None:
+                target.category = category.strip()
+            if pinned is not None:
+                target.pinned = pinned
+            self._flush()
+            return True
+
+    def delete_fact(self, fact_id: str) -> bool:
+        with self._lock, _cross_process_lock(self._lock_path()):
+            self._sync_from_disk_locked()
+            initial_len = len(self._facts)
+            self._facts = [f for f in self._facts if f.id != fact_id]
+            if len(self._facts) == initial_len:
+                return False
+            self._flush()
+            return True
+
+    def pin_fact(self, fact_id: str, pinned: bool = True) -> bool:
+        return self.update_fact(fact_id, pinned=pinned)
 
     def add_with_trust(self, text: str, source: str = "", trust: str = "") -> bool:
         return self.add(text, source=source, trust=trust)

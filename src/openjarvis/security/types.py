@@ -20,6 +20,16 @@ class ThreatLevel(str, Enum):
     CRITICAL = "critical"
 
 
+class PermissionLevel(str, Enum):
+    """5-tier permission classification for tools, actions, and operations."""
+
+    READ_ONLY = "read_only"
+    SAFE_LOCAL = "safe_local"
+    REVERSIBLE_LOCAL = "reversible_local"
+    SENSITIVE = "sensitive"
+    IRREVERSIBLE = "irreversible"
+
+
 class RedactionMode(str, Enum):
     """Action mode when findings are detected."""
 
@@ -96,6 +106,7 @@ class SecurityEvent:
 
 
 __all__ = [
+    "PermissionLevel",
     "RedactionMode",
     "ScanFinding",
     "ScanResult",

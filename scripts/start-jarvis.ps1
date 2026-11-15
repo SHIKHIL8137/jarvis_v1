@@ -8,4 +8,4 @@ if (Test-Path $keys) {
     }
 }
 Set-Location (Join-Path $PSScriptRoot '..')
-uv run jarvis gui
+uv run jarvis gui @args

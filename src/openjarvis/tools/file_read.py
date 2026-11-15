@@ -52,12 +52,9 @@ class FileReadTool(BaseTool):
 
     def _is_path_allowed(self, path: Path) -> bool:
         """Check if path is within allowed directories."""
-        if not self._allowed_dirs:
-            return True
-        resolved = path.resolve()
-        return any(
-            resolved == d or resolved.is_relative_to(d) for d in self._allowed_dirs
-        )
+        from openjarvis.tools._paths import is_path_within_allowed
+
+        return is_path_within_allowed(path, self._allowed_dirs)
 
     def execute(self, **params: Any) -> ToolResult:
         file_path = params.get("path", "")
