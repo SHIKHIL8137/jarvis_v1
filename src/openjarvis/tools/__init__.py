@@ -208,4 +208,28 @@ try:
 except ImportError:
     pass
 
-__all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]
+
+def ensure_tools_registered() -> None:
+    """Ensure all tool modules in openjarvis.tools are loaded and registered in ToolRegistry.
+    Handles situations where registries were cleared (e.g. during test teardown).
+    """
+    import importlib
+    import sys
+    from openjarvis.core.registry import ToolRegistry
+
+    if len(ToolRegistry.keys()) >= 10:
+        return
+
+    for mod_name in list(sys.modules.keys()):
+        if (
+            (mod_name.startswith("openjarvis.tools.") or mod_name == "openjarvis.workforce.forge_coding")
+            and not mod_name.endswith("_stubs")
+            and not mod_name.endswith("agent_tools")
+        ):
+            try:
+                importlib.reload(sys.modules[mod_name])
+            except Exception:
+                pass
+
+
+__all__ = ["BaseTool", "ToolExecutor", "ToolSpec", "ensure_tools_registered"]

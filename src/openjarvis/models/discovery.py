@@ -25,6 +25,40 @@ _REASONING_PATTERNS = re.compile(r"(reason|think|deepseek-r1|qwq|\bo1\b|\bo3\b|\
 # Known vision / multimodal model pattern keywords
 _VISION_PATTERNS = re.compile(r"(vision|vl|omni|\b4o\b|gemini|fuyu|kosmos|deplot|neva)", re.IGNORECASE)
 
+# Models explicitly known NOT to support tool/function calling
+KNOWN_NON_TOOL_MODELS: frozenset[str] = frozenset({
+    "deepseek-reasoner",
+    "deepseek-r1",
+    "o1-preview",
+    "o1-mini",
+    "gpt-3.5-turbo-instruct",
+    "text-davinci-003",
+    "claude-2.0",
+    "claude-2.1",
+    "claude-instant-1.2",
+    "embedding",
+    "bge-",
+    "rerank",
+})
+
+# Models explicitly confirmed to support function/tool calling
+KNOWN_TOOL_MODELS: frozenset[str] = frozenset({
+    "gpt-4",
+    "gpt-5",
+    "o3",
+    "claude-3",
+    "claude-sonnet",
+    "claude-haiku",
+    "claude-opus",
+    "gemini-1.5",
+    "gemini-2",
+    "gemini-2.5",
+    "gemini-3",
+    "deepseek-chat",
+    "qwen2.5-coder",
+    "qwen3",
+})
+
 
 class ModelDiscoveryEngine:
     """Central registry and dynamic discovery mechanism for local and cloud models."""
@@ -292,11 +326,22 @@ class ModelDiscoveryEngine:
             ]
 
             for prov, client in providers_to_probe:
-                if client is None:
+                # If neither client nor API key is configured
+                env_key_map = {
+                    "openai": "OPENAI_API_KEY",
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "google": "GEMINI_API_KEY",
+                    "deepseek": "DEEPSEEK_API_KEY",
+                    "openrouter": "OPENROUTER_API_KEY",
+                }
+                env_key = os.environ.get(env_key_map.get(prov, ""))
+
+                if client is None and not env_key:
                     self._provider_health[prov] = {
                         "provider": prov,
                         "type": "cloud",
                         "status": "unconfigured",
+                        "connected": False,
                         "model_count": 0,
                         "latency_ms": 0.0,
                         "last_checked": time.time(),
@@ -322,6 +367,33 @@ class ModelDiscoveryEngine:
                         for m in list_resp:
                             m_name = getattr(m, "name", str(m))
                             prov_models.append(m_name)
+                    elif prov == "anthropic":
+                        if client is not None and hasattr(client, "models") and hasattr(client.models, "list"):
+                            list_resp = client.models.list()
+                            elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                            data_items = getattr(list_resp, "data", [])
+                            for item in data_items:
+                                m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
+                                if m_id:
+                                    prov_models.append(m_id)
+                        else:
+                            api_key = env_key or getattr(client, "api_key", "")
+                            req = urllib.request.Request(
+                                "https://api.anthropic.com/v1/models",
+                                headers={
+                                    "x-api-key": api_key,
+                                    "anthropic-version": "2023-06-01",
+                                    "User-Agent": "OpenJarvis",
+                                },
+                                method="GET",
+                            )
+                            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                                elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                                data = json.loads(resp.read().decode("utf-8"))
+                                for item in data.get("data", []):
+                                    m_id = item.get("id")
+                                    if m_id:
+                                        prov_models.append(m_id)
                     else:
                         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                         prov_models = []
@@ -330,6 +402,7 @@ class ModelDiscoveryEngine:
                         "provider": prov,
                         "type": "cloud",
                         "status": "healthy" if prov_models else "degraded",
+                        "connected": True,
                         "model_count": len(prov_models),
                         "latency_ms": elapsed_ms,
                         "last_checked": time.time(),
@@ -338,15 +411,30 @@ class ModelDiscoveryEngine:
 
                     for m_id in prov_models:
                         cap = self._analyze_model_capability(m_id, prov, is_local=False, latency_ms=elapsed_ms)
-                        cap.provenance["tools"] = CapabilityProvenance.PROVIDER_DECLARED.value
                         models.append(cap)
 
                 except Exception as exc:
                     elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+                    err_str = str(exc).lower()
+                    connected = False
+                    if "auth" in err_str or "401" in err_str or "unauthorized" in err_str or "invalid api key" in err_str:
+                        status = "auth_error"
+                    elif "429" in err_str or "rate limit" in err_str or "quota" in err_str:
+                        status = "rate_limited"
+                        connected = True
+                    elif "404" in err_str or "405" in err_str or "not found" in err_str or "unsupported" in err_str:
+                        status = "unsupported_endpoint"
+                        connected = True
+                    elif "timeout" in err_str or "connection" in err_str or "unreachable" in err_str:
+                        status = "unreachable"
+                    else:
+                        status = "offline"
+
                     self._provider_health[prov] = {
                         "provider": prov,
                         "type": "cloud",
-                        "status": "offline",
+                        "status": status,
+                        "connected": connected,
                         "model_count": 0,
                         "latency_ms": elapsed_ms,
                         "last_checked": time.time(),
@@ -367,24 +455,11 @@ class ModelDiscoveryEngine:
         is_local: bool,
         latency_ms: float = 0.0,
     ) -> ModelCapabilityInfo:
+        m_lower = model_id.lower()
         param_size = self._parse_param_size(model_id)
-        is_coding = bool(_CODING_PATTERNS.search(model_id)) or "coder" in model_id.lower()
-        is_reasoning = bool(_REASONING_PATTERNS.search(model_id)) or "r1" in model_id.lower()
+        is_coding = bool(_CODING_PATTERNS.search(model_id)) or "coder" in m_lower or "claude-3-5" in m_lower or "gpt-4" in m_lower or "o3" in m_lower
+        is_reasoning = bool(_REASONING_PATTERNS.search(model_id)) or "r1" in m_lower or "o1" in m_lower or "o3" in m_lower
         is_vision = bool(_VISION_PATTERNS.search(model_id))
-
-        # Flag tool calling support
-        supports_tools = True
-        if "instruct" not in model_id.lower() and "chat" not in model_id.lower() and "coder" not in model_id.lower() and is_local and param_size < 3:
-            supports_tools = False
-
-        # Context length heuristics
-        ctx = 8192
-        if "128k" in model_id.lower() or "claude" in model_id.lower() or "gpt-4o" in model_id.lower():
-            ctx = 128000
-        elif "32k" in model_id.lower() or "qwen" in model_id.lower():
-            ctx = 32768
-        elif "16k" in model_id.lower():
-            ctx = 16384
 
         # Provenance attribution
         provenance: Dict[str, str] = {
@@ -392,29 +467,61 @@ class ModelDiscoveryEngine:
             "structured_output": CapabilityProvenance.PROVIDER_DECLARED.value if not is_local else CapabilityProvenance.INFERRED.value,
         }
         confirmed: List[str] = ["streaming"]
-        declared: List[str] = ["structured_output"] if not is_local else []
+        declared: List[str] = ["streaming"] if not is_local else []
 
-        if supports_tools:
-            provenance["tools"] = CapabilityProvenance.PROVIDER_DECLARED.value if not is_local else CapabilityProvenance.INFERRED.value
-            if not is_local:
-                declared.append("tools")
+        # Tool calling capability determination: DO NOT mark every cloud model as tool-capable
+        supports_tools = False
+        if any(non_tool in m_lower for non_tool in KNOWN_NON_TOOL_MODELS):
+            supports_tools = False
+            provenance["tools"] = CapabilityProvenance.UNKNOWN.value
+        elif any(tool_kw in m_lower for tool_kw in KNOWN_TOOL_MODELS):
+            supports_tools = True
+            provenance["tools"] = CapabilityProvenance.PROVIDER_DECLARED.value
+            declared.append("tools")
+        elif is_local:
+            if "instruct" in m_lower or "chat" in m_lower or "coder" in m_lower or param_size >= 7.0:
+                supports_tools = True
+                provenance["tools"] = CapabilityProvenance.INFERRED.value
+            else:
+                supports_tools = False
+                provenance["tools"] = CapabilityProvenance.UNKNOWN.value
         else:
+            # Cloud model not confirmed in tool allowlist: never assume tool capable!
+            supports_tools = False
             provenance["tools"] = CapabilityProvenance.UNKNOWN.value
 
+        # Coding provenance
         if is_coding:
-            provenance["coding"] = CapabilityProvenance.INFERRED.value
+            provenance["coding"] = CapabilityProvenance.PROVIDER_DECLARED.value if ("coder" in m_lower or "claude-3-5" in m_lower) else CapabilityProvenance.INFERRED.value
+            if provenance["coding"] == CapabilityProvenance.PROVIDER_DECLARED.value:
+                declared.append("coding")
         else:
             provenance["coding"] = CapabilityProvenance.UNKNOWN.value
 
+        # Reasoning provenance
         if is_reasoning:
-            provenance["reasoning"] = CapabilityProvenance.INFERRED.value
+            provenance["reasoning"] = CapabilityProvenance.PROVIDER_DECLARED.value if ("deepseek-r1" in m_lower or "o1" in m_lower or "o3" in m_lower) else CapabilityProvenance.INFERRED.value
+            if provenance["reasoning"] == CapabilityProvenance.PROVIDER_DECLARED.value:
+                declared.append("reasoning")
         else:
             provenance["reasoning"] = CapabilityProvenance.UNKNOWN.value
 
+        # Vision provenance
         if is_vision:
-            provenance["vision"] = CapabilityProvenance.INFERRED.value
+            provenance["vision"] = CapabilityProvenance.PROVIDER_DECLARED.value if ("omni" in m_lower or "4o" in m_lower or "gemini" in m_lower) else CapabilityProvenance.INFERRED.value
+            if provenance["vision"] == CapabilityProvenance.PROVIDER_DECLARED.value:
+                declared.append("vision")
         else:
             provenance["vision"] = CapabilityProvenance.UNKNOWN.value
+
+        # Context length heuristics
+        ctx = 8192
+        if "128k" in m_lower or "claude" in m_lower or "gpt-4o" in m_lower:
+            ctx = 128000
+        elif "32k" in m_lower or "qwen" in m_lower:
+            ctx = 32768
+        elif "16k" in m_lower:
+            ctx = 16384
 
         return ModelCapabilityInfo(
             model_id=model_id,
@@ -425,8 +532,8 @@ class ModelDiscoveryEngine:
             context_length=ctx,
             supports_tools=supports_tools,
             supports_structured_output=True,
-            supports_reasoning=is_reasoning or (param_size >= 7.0 and "instruct" in model_id.lower()),
-            supports_coding=is_coding or "claude-3-5" in model_id.lower() or "gpt-4" in model_id.lower(),
+            supports_reasoning=is_reasoning or (param_size >= 7.0 and "instruct" in m_lower),
+            supports_coding=is_coding,
             supports_vision=is_vision,
             supports_streaming=True,
             health_status="healthy",

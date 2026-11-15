@@ -152,3 +152,53 @@
 - Live external webhook triggering on `https://n8n.kavlien.store` (requires third-party incoming HTTP triggers).
 - Live cloud API generation across cloud providers whose API keys are not locally configured in `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. (unconfigured providers safely contribute zero selectable models).
 
+---
+
+## 4. Final Independent Reliability and Security Repair
+
+### 4.1 FORGE Command Execution & Workspace Containment
+- **Zero `shell=True` Execution**: Verification commands strictly execute with `shell=False` across both Windows and POSIX platforms.
+- **Robust Argument Parsing**: Commands are tokenized via `shlex.split()` with outer quote stripping so arguments are cleanly delivered to subprocess without shell evaluation.
+- **Explicit Executable Allowlist**: Implemented `ALLOWED_VERIFICATION_EXECUTABLES` (`pytest`, `python`, `python3`, `py`, `npm`, `npx`, `node`, `git`, `uv`, `ruff`, `flake8`, `mypy`, `black`, `isort`, `vitest`, `jest`, `cargo`, `go`, `pnpm`, `yarn`). Disallowed executables are rejected with `status="blocked"`.
+- **Argument Metacharacter Validation**: Strictly rejected dangerous shell chaining/redirection operators (`;`, `&&`, `||`, `|`, `>`, `>>`, `<`, `<<`, `&`, `` ` ``, `$()`, `$`).
+- **Workspace Boundary Containment**: Enforced containment of `target_workdir` and path arguments via `is_path_within_allowed(target_workdir, allowed_dirs)`. Path traversal (`..`, `/..`, `\..`, `/etc/`, `\Windows\`) and symlink escapes outside permitted workspace roots return `VerificationStatus.BLOCKED`.
+- **Regression Tests**: Added `tests/workforce/test_forge_command_security.py` (5 tests passing).
+
+### 4.2 n8n Approval Concurrency & State Machine
+- **Atomic Test-and-Set**: Replaced racy check-then-act logic with atomic SQLite conditional updates (`UPDATE pending_actions SET status = 'executing' ... WHERE id = ? AND status = 'approved'`).
+- **7-State Lifecycle**: Formalized explicit states: `pending`, `approved`, `executing`, `executed`, `failed`, `expired`, `denied`.
+- **Single-Use Concurrency Guarantee**: Under 10-thread simultaneous competition, exactly 1 claim succeeds and 9 fail.
+- **Pre-Execution Failure Restoration**: When a network disconnect or client error occurs before the HTTP request reaches n8n (`isinstance(err, (URLError, ConnectionError, TimeoutError, OSError)) and not HTTPError`), status reverts to `approved`, preventing permanent approval loss.
+- **Regression Tests**: Added `tests/tools/test_n8n_concurrency.py` (3 tests passing).
+
+### 4.3 Model Capability Verification
+- **Capability Confidence Policies**: Implemented `CapabilityConfidencePolicy`:
+  - `CONFIRMED_ONLY`: Requires live benchmark/execution confirmation.
+  - `DECLARED_OR_CONFIRMED`: Accepts provider-declared or confirmed capabilities; rejects inferred heuristics.
+  - `ALLOW_INFERRED`: Accepts inferred capabilities but strictly rejects unknown.
+- **Non-Tool Cloud Models**: Explicitly denied tool-calling support on models known not to support function calling (e.g., `deepseek-reasoner` / `deepseek-r1`, `o1-preview`, `o1-mini`, `gpt-3.5-turbo-instruct`, `claude-2.0`).
+- **Unknown Cloud Models**: Cloud models not confirmed in the tool allowlist default to `supports_tools=False` and `provenance["tools"]="unknown"`.
+- **Regression Tests**: Added `tests/models/test_model_capability_policy.py` (5 tests passing).
+
+### 4.4 Cloud Model Discovery
+- **Anthropic Discovery Path**: Live discovery path probes `GET https://api.anthropic.com/v1/models` using `x-api-key` and `anthropic-version: 2023-06-01` or `client.models.list()`.
+- **Separate Connectivity Reporting**: Provider health reports `connected: bool` separately from `model_count: int` and `status: str`.
+- **Error Classification**:
+  - HTTP 401: `status="auth_error"`, `connected=False`
+  - HTTP 429: `status="rate_limited"`, `connected=True`
+  - HTTP 404/405: `status="unsupported_endpoint"`, `connected=True`
+  - Network timeout: `status="unreachable"`, `connected=False`
+- **Zero Fabrication**: Provider metadata is never fabricated when discovery fails or returns 0 models.
+
+### 4.5 Multi-Agent Execution & Tool Registration
+- **Tool Registration Resilience**: Implemented `ensure_tools_registered()`. When test harnesses clear registries between runs, tools are dynamically reloaded, ensuring all 70 built-in tools remain available.
+- **Elimination of Silent Fallbacks**: Removed `step_model = "auto"` fallbacks. When dynamic model selection fails to allocate a compatible model, the step transitions to `StepStatus.FAILED` with an explicit error.
+- **Runtime Model Propagation**: Dynamically selected model IDs are saved to agent heartbeats and passed into `step_executor(step, model=step_model)` and `engine.execute_coding_task(..., model=allocated_model)`.
+- **Regression Tests**: Added `tests/workforce/test_specialist_real_execution_e2e.py` (5 tests passing).
+
+### 4.6 Final Verification Summary
+- **Backend Pytest**: **85 passed** in 15.46s (100% pass rate).
+- **Frontend Vitest**: **117 passed** across 23 test files in 1.74s (100% pass rate).
+- **Frontend Build**: Vite v8.3.4 compiled cleanly in 1.14s with zero errors.
+- **Documentation**: Generated `docs/JARVIS_FINAL_SECURITY_AUDIT.md`, `docs/JARVIS_FINAL_TEST_REPORT.md`, and updated `docs/JARVIS_INTEGRATION_CHANGELOG.md`.
+

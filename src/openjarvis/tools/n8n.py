@@ -445,29 +445,55 @@ class N8nTool(BaseTool):
                 canon_hash = _canonical_payload_hash(payload)
                 perm_key = f"n8n:workflow:{clean_id}:{canon_hash}"
 
-                is_approved, app_msg = self._check_approval(
-                    action_type="n8n_execute_workflow",
-                    desc=f"Execute n8n workflow '{clean_id}'",
-                    payload=payload,
-                    permission_key=perm_key,
-                    approval_id=approval_id,
-                )
-                if not is_approved:
+                if approval_id:
+                    claimed, action_obj, claim_msg = self._approval_store.claim_approval_for_execution(
+                        approval_id, perm_key, "n8n_execute_workflow"
+                    )
+                else:
+                    claimed, action_obj, claim_msg = self._approval_store.claim_by_permission_key(
+                        perm_key, "n8n_execute_workflow"
+                    )
+
+                if not claimed:
+                    if not approval_id and (not action_obj or claim_msg == "No active approved action for this permission key."):
+                        new_act = self._approval_store.queue_action(
+                            action_type="n8n_execute_workflow",
+                            description=f"Execute n8n workflow '{clean_id}'",
+                            payload={
+                                "permission_key": perm_key,
+                                "action_type": "n8n_execute_workflow",
+                                "payload_hash": canon_hash,
+                                "_requester": "user",
+                            },
+                            permission_key=perm_key,
+                            tier=TIER_HIGH,
+                        )
+                        claim_msg = f"Approval queued with ID: {new_act.id}. Please approve to execute."
+
                     return ToolResult(
                         tool_name="n8n",
-                        content=(
-                            f"Action required approval: executing workflow '{clean_id}' is gated. "
-                            f"{app_msg}"
-                        ),
+                        content=f"Action required approval: executing workflow '{clean_id}' is gated. {claim_msg}",
                         success=False,
                     )
 
-                res = self.client.execute_workflow(clean_id, data=payload)
-                return ToolResult(
-                    tool_name="n8n",
-                    content=f"Workflow '{clean_id}' executed: {json.dumps(res, indent=2)}",
-                    success=True,
-                )
+                # Atomically claimed in STATUS_EXECUTING
+                try:
+                    res = self.client.execute_workflow(clean_id, data=payload)
+                    self._approval_store.complete_approval_execution(action_obj.id, success=True)
+                    return ToolResult(
+                        tool_name="n8n",
+                        content=f"Workflow '{clean_id}' executed: {json.dumps(res, indent=2)}",
+                        success=True,
+                    )
+                except Exception as exec_err:
+                    is_pre_exec = (
+                        isinstance(exec_err, (urllib.error.URLError, ConnectionError, TimeoutError, OSError))
+                        and not isinstance(exec_err, urllib.error.HTTPError)
+                    )
+                    self._approval_store.complete_approval_execution(
+                        action_obj.id, success=False, error=str(exec_err), pre_execution_failure=is_pre_exec
+                    )
+                    raise
 
             elif action == "trigger_webhook":
                 if not webhook_path:
@@ -477,30 +503,55 @@ class N8nTool(BaseTool):
                 canon_hash = _canonical_payload_hash(payload)
                 perm_key = f"n8n:webhook:{clean_path.strip('/')}:{canon_hash}"
 
-                # Security Approval Gate: Every sensitive webhook trigger must require explicit approval
-                is_approved, app_msg = self._check_approval(
-                    action_type="n8n_trigger_webhook",
-                    desc=f"Trigger n8n webhook '{clean_path}'",
-                    payload=payload,
-                    permission_key=perm_key,
-                    approval_id=approval_id,
-                )
-                if not is_approved:
+                if approval_id:
+                    claimed, action_obj, claim_msg = self._approval_store.claim_approval_for_execution(
+                        approval_id, perm_key, "n8n_trigger_webhook"
+                    )
+                else:
+                    claimed, action_obj, claim_msg = self._approval_store.claim_by_permission_key(
+                        perm_key, "n8n_trigger_webhook"
+                    )
+
+                if not claimed:
+                    if not approval_id and (not action_obj or claim_msg == "No active approved action for this permission key."):
+                        new_act = self._approval_store.queue_action(
+                            action_type="n8n_trigger_webhook",
+                            description=f"Trigger n8n webhook '{clean_path}'",
+                            payload={
+                                "permission_key": perm_key,
+                                "action_type": "n8n_trigger_webhook",
+                                "payload_hash": canon_hash,
+                                "_requester": "user",
+                            },
+                            permission_key=perm_key,
+                            tier=TIER_HIGH,
+                        )
+                        claim_msg = f"Approval queued with ID: {new_act.id}. Please approve to execute."
+
                     return ToolResult(
                         tool_name="n8n",
-                        content=(
-                            f"Action required approval: webhook '{clean_path}' is gated. "
-                            f"{app_msg}"
-                        ),
+                        content=f"Action required approval: webhook '{clean_path}' is gated. {claim_msg}",
                         success=False,
                     )
 
-                res = self.client.trigger_webhook(clean_path, data=payload)
-                return ToolResult(
-                    tool_name="n8n",
-                    content=f"Webhook '{clean_path}' triggered: {json.dumps(res, indent=2)}",
-                    success=True,
-                )
+                # Atomically claimed in STATUS_EXECUTING
+                try:
+                    res = self.client.trigger_webhook(clean_path, data=payload)
+                    self._approval_store.complete_approval_execution(action_obj.id, success=True)
+                    return ToolResult(
+                        tool_name="n8n",
+                        content=f"Webhook '{clean_path}' triggered: {json.dumps(res, indent=2)}",
+                        success=True,
+                    )
+                except Exception as exec_err:
+                    is_pre_exec = (
+                        isinstance(exec_err, (urllib.error.URLError, ConnectionError, TimeoutError, OSError))
+                        and not isinstance(exec_err, urllib.error.HTTPError)
+                    )
+                    self._approval_store.complete_approval_execution(
+                        action_obj.id, success=False, error=str(exec_err), pre_execution_failure=is_pre_exec
+                    )
+                    raise
 
             else:
                 return ToolResult(tool_name="n8n", content=f"Unknown n8n action: '{action}'", success=False)
@@ -521,66 +572,20 @@ class N8nTool(BaseTool):
         permission_key: str,
         approval_id: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """Verify action has human approval with strict single-use, expiry, and payload binding."""
-        now_iso = datetime.now(timezone.utc).isoformat()
-
+        """Verify action has human approval with atomic conditional claim and payload binding."""
         if approval_id:
-            action = self._approval_store.get_action(approval_id)
-            if not action:
-                return False, f"Approval ID '{approval_id}' not found."
+            claimed, action_obj, msg = self._approval_store.claim_approval_for_execution(
+                approval_id, permission_key, action_type
+            )
+            return claimed, msg
 
-            if action.status == STATUS_EXECUTED:
-                return False, f"Approval ID '{approval_id}' has already been consumed (single-use constraint)."
+        claimed, action_obj, msg = self._approval_store.claim_by_permission_key(
+            permission_key, action_type
+        )
+        if claimed and action_obj:
+            return True, action_obj.id
 
-            if action.status == STATUS_DENIED:
-                return False, f"Approval ID '{approval_id}' was denied by user."
-
-            if action.status == STATUS_EXPIRED:
-                return False, f"Approval ID '{approval_id}' has expired."
-
-            if action.status != STATUS_APPROVED:
-                return False, f"Approval ID '{approval_id}' is pending approval (current status: {action.status})."
-
-            # Check expiration
-            if action.expires_at and action.expires_at <= now_iso:
-                self._approval_store.update_status(action.id, STATUS_EXPIRED)
-                return False, f"Approval ID '{approval_id}' has expired."
-
-            # Strict validation: Action type must match exactly
-            if action.action_type != action_type:
-                return False, (
-                    f"Approval action type mismatch: approval authorizes '{action.action_type}', "
-                    f"not '{action_type}'."
-                )
-
-            # Strict validation: Permission key must match exactly (workflow ID / path & payload hash)
-            if action.permission_key != permission_key:
-                return False, (
-                    "Approval permission mismatch: approval does not authorize this specific workflow or payload. "
-                    "Changed payload or target requires a new approval."
-                )
-
-            # Prevent agent self-approval
-            if isinstance(action.payload, dict) and action.payload.get("_requester") == "agent" and not action.decision_at:
-                return False, "Agent-generated requests cannot approve themselves."
-
-            # SINGLE-USE APPROVAL SEMANTICS: Consume approval immediately
-            self._approval_store.update_status(action.id, STATUS_EXECUTED)
-            return True, action.id
-
-        # If no approval ID provided, check for unconsumed approved action for this exact permission key
-        existing = self._approval_store.get_action_by_permission_key(permission_key)
-        if existing and existing.status == STATUS_APPROVED:
-            if not existing.expires_at or existing.expires_at > now_iso:
-                self._approval_store.update_status(existing.id, STATUS_EXECUTED)
-                return True, existing.id
-            else:
-                self._approval_store.update_status(existing.id, STATUS_EXPIRED)
-
-        if existing and existing.status == STATUS_PENDING:
-            return False, f"Approval queued with ID: {existing.id}. Please approve to execute."
-
-        # Queue new high-tier pending action
+        # Queue new high-tier pending action if none exists
         action = self._approval_store.queue_action(
             action_type=action_type,
             description=desc,

@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from openjarvis.core.events import EventBus
 from openjarvis.core.registry import ToolRegistry
+import openjarvis.tools  # noqa: F401 - ensure ToolRegistry is fully populated with all registered tools
 from openjarvis.tasks.models import BackgroundTask, StepStatus, TaskBudget, TaskStep
 from openjarvis.workforce.models import (
     AgentManifest,
@@ -60,6 +61,9 @@ class AtlasOrchestrator:
         bus: Optional[EventBus] = None,
         max_parallel_workers: int = 2,
     ) -> None:
+        from openjarvis.tools import ensure_tools_registered
+        ensure_tools_registered()
+
         self.registry = registry or get_workforce_registry()
         self.bus = bus
         self.max_parallel_workers = max_parallel_workers
@@ -84,22 +88,29 @@ class AtlasOrchestrator:
                     try:
                         sel_engine = get_model_selection_engine()
                         sel = sel_engine.select_model(task_type="planning")
-                        selected_model = sel.model_id
+                        if sel.is_compatible and sel.model_id:
+                            selected_model = sel.model_id
+                        else:
+                            selected_model = None
                     except Exception as sel_err:
-                        logger.debug("Planning model selection fallback: %s", sel_err)
-                        selected_model = "auto"
+                        logger.debug("Planning model selection error: %s", sel_err)
+                        selected_model = None
 
-                prompt = PLANNER_PROMPT_TEMPLATE.format(user_request=user_request)
-                resp = engine.generate(
-                    messages=[
-                        Message(role=Role.SYSTEM, content="You are a precise task planner that outputs only JSON."),
-                        Message(role=Role.USER, content=prompt),
-                    ],
-                    model=selected_model,
-                    temperature=0.2,
-                )
-                text = resp.get("text", "") if isinstance(resp, dict) else str(resp)
-                raw_steps = self._parse_json_plan(text)
+                if selected_model:
+                    prompt = PLANNER_PROMPT_TEMPLATE.format(user_request=user_request)
+                    resp = engine.generate(
+                        messages=[
+                            Message(role=Role.SYSTEM, content="You are a precise task planner that outputs only JSON."),
+                            Message(role=Role.USER, content=prompt),
+                        ],
+                        model=selected_model,
+                        temperature=0.2,
+                    )
+                    text = resp.get("text", "") if isinstance(resp, dict) else str(resp)
+                    raw_steps = self._parse_json_plan(text)
+                else:
+                    logger.info("No compatible planning model available; falling back to heuristic planner.")
+                    raw_steps = self._heuristic_planner(user_request)
             except Exception as exc:
                 logger.warning("LLM planning generation failed: %s. Using heuristic planner.", exc)
 
@@ -325,6 +336,10 @@ class AtlasOrchestrator:
             return report.to_dict(), None
 
         from openjarvis.core.registry import ToolRegistry
+        from openjarvis.tools import ensure_tools_registered
+
+        if not ToolRegistry.contains(step.tool_name):
+            ensure_tools_registered()
 
         if not ToolRegistry.contains(step.tool_name):
             if step.tool_name == "think":
@@ -392,9 +407,15 @@ class AtlasOrchestrator:
                         norm_task_type = AGENT_TO_TASK_MAP.get(step.assigned_agent, step.assigned_agent)
                         sel_engine = get_model_selection_engine()
                         sel = sel_engine.select_model(task_type=norm_task_type, agent_id=step.assigned_agent)
+                        if not sel.is_compatible or not sel.model_id:
+                            raise RuntimeError(f"No compatible model available for {step.assigned_agent}: {sel.reason}")
                         step_model = sel.model_id
-                    except Exception:
-                        step_model = "auto"
+                    except Exception as model_err:
+                        logger.error("Model selection failed for step %s (%s): %s", step.step_id, step.assigned_agent, model_err)
+                        step.status = StepStatus.FAILED
+                        step.error = f"Model selection failed: {model_err}"
+                        self.registry.set_agent_state(step.assigned_agent, AgentRuntimeState.DEGRADED, error=str(model_err))
+                        continue
 
                     self.registry.record_heartbeat(step.assigned_agent, current_task_id=task_id, active_model=step_model)
                     step.tool_params["_allocated_model"] = step_model

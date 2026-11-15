@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from openjarvis.core.config import JarvisConfig, detect_hardware, load_config
 from openjarvis.models.capabilities import (
+    CapabilityConfidencePolicy,
     CapabilityProvenance,
     ModelCapabilityInfo,
     ModelPolicy,
@@ -122,6 +123,7 @@ class ModelSelectionEngine:
         requires_vision: bool = False,
         requires_reasoning: bool = False,
         max_cost_per_m: Optional[float] = None,
+        confidence_policy: CapabilityConfidencePolicy | str = CapabilityConfidencePolicy.ALLOW_INFERRED,
         raise_on_none: bool = False,
     ) -> SelectionResult:
         """Dynamically select the optimal available model based on capability requirements,
@@ -168,6 +170,7 @@ class ModelSelectionEngine:
                 local_only=is_privacy_strict,
                 min_context_tokens=min_context_tokens,
                 max_cost_per_m=max_cost_per_m,
+                confidence_policy=confidence_policy,
             )
 
             # 4. If preferred model is specified, verify it is available, healthy, and meets constraints
@@ -258,6 +261,7 @@ class ModelSelectionEngine:
         local_only: bool,
         min_context_tokens: int,
         max_cost_per_m: Optional[float] = None,
+        confidence_policy: CapabilityConfidencePolicy | str = CapabilityConfidencePolicy.ALLOW_INFERRED,
     ) -> List[ModelCapabilityInfo]:
         filtered: List[ModelCapabilityInfo] = []
 
@@ -283,16 +287,19 @@ class ModelSelectionEngine:
             # Unknown capability provenance is NEVER treated as confirmed support
             missing_cap = False
             for req in required_capabilities:
-                if not m.has_capability(req, allow_inferred=True):
+                if not m.has_capability(req, confidence_policy=confidence_policy):
                     missing_cap = True
                     break
             if missing_cap:
                 continue
 
             # 6. Task specific mandatory capabilities
-            if task_type == "vision" and not m.has_capability("vision"):
+            if task_type == "vision" and not m.has_capability("vision", confidence_policy=confidence_policy):
                 continue
-            if task_type == "coding" and not (m.has_capability("coding") or m.has_capability("tools")):
+            if task_type == "coding" and not (
+                m.has_capability("coding", confidence_policy=confidence_policy)
+                or m.has_capability("tools", confidence_policy=confidence_policy)
+            ):
                 continue
 
             # 7. Hardware boundary: reject local models exceeding GPU VRAM budget

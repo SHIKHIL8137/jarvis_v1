@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,9 +32,11 @@ DECISION_ASK = "ask"
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
-STATUS_DENIED = "denied"
-STATUS_EXPIRED = "expired"
+STATUS_EXECUTING = "executing"
 STATUS_EXECUTED = "executed"
+STATUS_FAILED = "failed"
+STATUS_EXPIRED = "expired"
+STATUS_DENIED = "denied"
 
 # Tiers govern default ask behavior
 TIER_TRIVIAL = "trivial"  # Execute immediately, no ask
@@ -152,6 +155,7 @@ class ApprovalStore:
             db_path = str(get_config_dir() / "approvals.db")
         self._db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._create_tables()
@@ -271,6 +275,120 @@ class ApprovalStore:
         ).fetchall()
         return [PendingAction.from_row(r) for r in rows]
 
+    def claim_approval_for_execution(
+        self,
+        action_id: str,
+        expected_permission_key: str,
+        expected_action_type: str,
+    ) -> Tuple[bool, Optional[PendingAction], str]:
+        """Atomically claim an approved action for execution using conditional update.
+        Guarantees that only ONE concurrent request can transition 'approved' -> 'executing'.
+        """
+        with self._lock:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            row = self._conn.execute(
+                "SELECT id, action_type, description, payload, permission_key, "
+                "tier, status, created_at, expires_at, notification_sent, decision_at "
+                "FROM pending_actions WHERE id = ?",
+                (action_id,),
+            ).fetchone()
+            if not row:
+                return False, None, f"Approval ID '{action_id}' not found."
+
+            action = PendingAction.from_row(row)
+
+            if action.status == STATUS_EXECUTING:
+                return False, action, f"Approval ID '{action_id}' is currently executing in another concurrent request."
+            if action.status == STATUS_EXECUTED:
+                return False, action, f"Approval ID '{action_id}' has already been consumed (single-use constraint)."
+            if action.status == STATUS_DENIED:
+                return False, action, f"Approval ID '{action_id}' was denied."
+            if action.status == STATUS_EXPIRED:
+                return False, action, f"Approval ID '{action_id}' has expired."
+            if action.status != STATUS_APPROVED:
+                return False, action, f"Approval ID '{action_id}' is not approved (status: {action.status})."
+
+            # Check expiration
+            if action.expires_at and action.expires_at <= now_iso:
+                self._conn.execute("UPDATE pending_actions SET status = ? WHERE id = ?", (STATUS_EXPIRED, action.id))
+                self._conn.commit()
+                return False, action, f"Approval ID '{action_id}' has expired."
+
+            # Verify action type matches exactly
+            if action.action_type != expected_action_type:
+                return False, action, (
+                    f"Approval action type mismatch: approved for '{action.action_type}', "
+                    f"attempted '{expected_action_type}'."
+                )
+
+            # Verify permission key matches exactly (target + canonical payload hash)
+            if action.permission_key != expected_permission_key:
+                return False, action, (
+                    "Approval permission mismatch: approval does not authorize this exact target and payload."
+                )
+
+            # Prevent agent self-approval
+            if isinstance(action.payload, dict) and action.payload.get("_requester") == "agent" and not action.decision_at:
+                return False, action, "Agent-generated requests cannot approve themselves."
+
+            # ATOMIC TEST-AND-SET CONDITIONAL UPDATE
+            cur = self._conn.execute(
+                "UPDATE pending_actions SET status = ?, decision_at = ? WHERE id = ? AND status = ?",
+                (STATUS_EXECUTING, now_iso, action.id, STATUS_APPROVED),
+            )
+            self._conn.commit()
+            if cur.rowcount == 0:
+                # Concurrent race lost!
+                return False, action, f"Approval ID '{action_id}' was claimed concurrently by another request."
+
+            action.status = STATUS_EXECUTING
+            return True, action, "Claimed"
+
+    def claim_by_permission_key(
+        self,
+        permission_key: str,
+        expected_action_type: str,
+    ) -> Tuple[bool, Optional[PendingAction], str]:
+        """Atomically find and claim an unconsumed approved action matching the exact permission key."""
+        with self._lock:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            row = self._conn.execute(
+                "SELECT id, action_type, description, payload, permission_key, "
+                "tier, status, created_at, expires_at, notification_sent, decision_at "
+                "FROM pending_actions WHERE permission_key = ? AND status = ? AND (expires_at > ? OR expires_at = '') "
+                "ORDER BY created_at DESC LIMIT 1",
+                (permission_key, STATUS_APPROVED, now_iso),
+            ).fetchone()
+            if not row:
+                return False, None, "No active approved action for this permission key."
+
+            action = PendingAction.from_row(row)
+            return self.claim_approval_for_execution(action.id, permission_key, expected_action_type)
+
+    def complete_approval_execution(
+        self,
+        action_id: str,
+        success: bool,
+        error: Optional[str] = None,
+        pre_execution_failure: bool = False,
+    ) -> None:
+        """Complete approval execution. If failure occurred before execution started,
+        restore state to 'approved' so approval is not permanently lost."""
+        with self._lock:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if success:
+                new_status = STATUS_EXECUTED
+            elif pre_execution_failure:
+                new_status = STATUS_APPROVED  # Do not permanently consume if failed before execution!
+            else:
+                new_status = STATUS_FAILED
+
+            self._conn.execute(
+                "UPDATE pending_actions SET status = ?, decision_at = ? WHERE id = ?",
+                (new_status, now_iso, action_id),
+            )
+            self._conn.commit()
+
     def update_status(
         self,
         action_id: str,
@@ -291,6 +409,14 @@ class ApprovalStore:
                 (status, now, action_id),
             )
         self._conn.commit()
+
+    def approve_action(self, action_id: str) -> None:
+        """Mark a pending action as approved."""
+        self.update_status(action_id, STATUS_APPROVED)
+
+    def deny_action(self, action_id: str) -> None:
+        """Mark a pending action as denied."""
+        self.update_status(action_id, STATUS_DENIED)
 
     def expire_stale(self) -> int:
         """Mark past-TTL pending actions as expired. Returns count."""

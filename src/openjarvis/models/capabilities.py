@@ -44,6 +44,14 @@ class CapabilityProvenance(str, Enum):
     UNKNOWN = "unknown"  # Unverified or unsupported; must never be assumed supported
 
 
+class CapabilityConfidencePolicy(str, Enum):
+    """Enforceable confidence policies for verifying model capabilities."""
+
+    CONFIRMED_ONLY = "confirmed_only"               # Only capabilities proven by runtime execution
+    DECLARED_OR_CONFIRMED = "declared_or_confirmed" # Confirmed or provider-declared capabilities
+    ALLOW_INFERRED = "allow_inferred"               # Allow inferred heuristics, but reject unknown
+
+
 class NoCompatibleModelAvailable(Exception):
     """Raised when no discovered model satisfies task constraints, privacy policies, or hardware budgets."""
 
@@ -87,35 +95,82 @@ class ModelCapabilityInfo:
     last_checked: float = field(default_factory=time.time)
     error_message: Optional[str] = None
 
-    def has_capability(self, cap: str, allow_inferred: bool = True) -> bool:
+    def has_capability(
+        self,
+        cap: str,
+        allow_inferred: bool = True,
+        confidence_policy: CapabilityConfidencePolicy | str = CapabilityConfidencePolicy.ALLOW_INFERRED,
+    ) -> bool:
         """Strict capability verification. Unknown capability provenance is never treated as confirmed."""
         norm_cap = cap.lower().strip()
+        if norm_cap in ("tool_calling", "function_calling"):
+            norm_cap = "tools"
+        elif norm_cap in ("json_mode",):
+            norm_cap = "structured_output"
+        elif norm_cap in ("thinking",):
+            norm_cap = "reasoning"
+        elif norm_cap in ("code",):
+            norm_cap = "coding"
+        elif norm_cap in ("multimodal",):
+            norm_cap = "vision"
+
+        # If a fundamental capability flag is False, the model cannot have that capability
+        if norm_cap == "tools" and not self.supports_tools:
+            return False
+        if norm_cap == "vision" and not self.supports_vision:
+            return False
+        if norm_cap == "coding" and not self.supports_coding:
+            return False
+        if norm_cap == "reasoning" and not self.supports_reasoning:
+            return False
+        if norm_cap == "structured_output" and not self.supports_structured_output:
+            return False
+
         prov = self.provenance.get(norm_cap, "")
+        if not prov:
+            if norm_cap in [c.lower() for c in self.confirmed_capabilities]:
+                prov = CapabilityProvenance.CONFIRMED.value
+            elif norm_cap in [c.lower() for c in self.provider_declared_capabilities]:
+                prov = CapabilityProvenance.PROVIDER_DECLARED.value
+            else:
+                prov = CapabilityProvenance.INFERRED.value
+
         if prov == CapabilityProvenance.UNKNOWN.value:
             return False
 
-        if norm_cap in [c.lower() for c in self.confirmed_capabilities]:
+        policy = confidence_policy if isinstance(confidence_policy, CapabilityConfidencePolicy) else CapabilityConfidencePolicy(str(confidence_policy))
+
+        # 1. Confirmed capabilities satisfy all confidence policies
+        if norm_cap in [c.lower() for c in self.confirmed_capabilities] or prov == CapabilityProvenance.CONFIRMED.value:
             return True
 
-        if norm_cap in [c.lower() for c in self.provider_declared_capabilities]:
+        if policy == CapabilityConfidencePolicy.CONFIRMED_ONLY:
+            return False
+
+        # 2. Provider-declared capabilities satisfy DECLARED_OR_CONFIRMED and ALLOW_INFERRED
+        if norm_cap in [c.lower() for c in self.provider_declared_capabilities] or prov == CapabilityProvenance.PROVIDER_DECLARED.value:
             return True
 
-        if allow_inferred and prov != CapabilityProvenance.UNKNOWN.value:
-            if norm_cap in ("tools", "tool_calling", "function_calling"):
+        if policy == CapabilityConfidencePolicy.DECLARED_OR_CONFIRMED:
+            return False
+
+        # 3. Inferred capabilities satisfy ALLOW_INFERRED only when allow_inferred is True
+        if allow_inferred and policy == CapabilityConfidencePolicy.ALLOW_INFERRED and prov == CapabilityProvenance.INFERRED.value:
+            if norm_cap == "tools":
                 return self.supports_tools
-            if norm_cap in ("structured_output", "json_mode"):
+            if norm_cap == "structured_output":
                 return self.supports_structured_output
-            if norm_cap in ("reasoning", "thinking"):
+            if norm_cap == "reasoning":
                 return self.supports_reasoning
-            if norm_cap in ("coding", "code"):
+            if norm_cap == "coding":
                 return self.supports_coding
-            if norm_cap in ("vision", "multimodal"):
+            if norm_cap == "vision":
                 return self.supports_vision
-            if norm_cap in ("audio_in",):
+            if norm_cap == "audio_in":
                 return self.supports_audio_in
-            if norm_cap in ("audio_out",):
+            if norm_cap == "audio_out":
                 return self.supports_audio_out
-            if norm_cap in ("streaming",):
+            if norm_cap == "streaming":
                 return self.supports_streaming
 
         return False

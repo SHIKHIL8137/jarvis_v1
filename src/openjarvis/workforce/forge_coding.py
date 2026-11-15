@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -18,10 +20,36 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set
 
+from openjarvis.core.config import load_config
+from openjarvis.tools._paths import get_safe_default_dirs, is_path_within_allowed
 from openjarvis.workforce.models import AgentReport, AgentRuntimeState
 from openjarvis.workforce.registry import AgentWorkforceRegistry, get_workforce_registry
 
 logger = logging.getLogger(__name__)
+
+# Explicit verification executables permitted for FORGE test verification
+ALLOWED_VERIFICATION_EXECUTABLES: frozenset[str] = frozenset({
+    "pytest",
+    "python",
+    "python3",
+    "py",
+    "npm",
+    "npx",
+    "node",
+    "git",
+    "uv",
+    "ruff",
+    "flake8",
+    "mypy",
+    "black",
+    "isort",
+    "vitest",
+    "jest",
+    "cargo",
+    "go",
+    "pnpm",
+    "yarn",
+})
 
 
 class VerificationStatus(str, Enum):
@@ -145,6 +173,46 @@ class ForgeCodingEngine:
 
         target_workdir = Path(workdir or os.getcwd()).resolve()
 
+        # Enforce workspace security boundary and reject unauthorized directories / symlink escapes
+        cfg = load_config()
+        configured_allowed = getattr(cfg.security, "allowed_dirs", None)
+        if configured_allowed:
+            allowed_dirs = configured_allowed
+            safe_by_default = False
+        else:
+            allowed_dirs = get_safe_default_dirs()
+            safe_by_default = True
+
+        if not is_path_within_allowed(target_workdir, allowed_dirs, safe_by_default=safe_by_default):
+            logger.warning("FORGE target_workdir %s is not within allowed workspace", target_workdir)
+            err_msg = f"Security boundary violation: target workdir '{target_workdir}' is outside authorized workspace."
+            report = AgentReport(
+                agent_id="forge",
+                task_id=task_id,
+                step_id=step_id,
+                work_performed="Blocked coding task: unauthorized work directory or security violation.",
+                findings=[{"type": "security_violation", "workdir": str(target_workdir), "reason": "unauthorized_workdir"}],
+                evidence=[],
+                files_inspected=[],
+                files_changed=[],
+                tests_executed=[{
+                    "command": verification_cmd or "n/a",
+                    "passed": False,
+                    "status": VerificationStatus.BLOCKED.value,
+                    "exit_code": -1,
+                    "duration_seconds": 0.0,
+                    "output": err_msg,
+                }],
+                results={"engine": "blocked", "verification_status": VerificationStatus.BLOCKED.value, "verified": False},
+                errors=[err_msg],
+                remaining_work="Re-target task to an authorized workspace directory",
+                confidence=0.0,
+                suggested_next_action="Reconfigure allowed_dirs or select a workspace within permitted roots",
+            )
+            self.registry.store.save_report(report)
+            self.registry.set_agent_state("forge", AgentRuntimeState.DEGRADED, error=err_msg)
+            return report
+
         # Enforce workspace directory existence
         if not target_workdir.is_dir():
             target_workdir.mkdir(parents=True, exist_ok=True)
@@ -189,7 +257,6 @@ class ForgeCodingEngine:
             if opencode_usable:
                 try:
                     logger.info("FORGE executing via OpenCodeAgent with model %s", coding_model)
-                    from openjarvis.core.config import load_config
                     from openjarvis.engine._discovery import get_engine
 
                     cfg = load_config()
@@ -378,25 +445,22 @@ class ForgeCodingEngine:
         return sorted(changed)
 
     def _run_command(self, cmd: str, cwd: str) -> Dict[str, Any]:
-        """Run a verification command safely within workspace boundary. Block traversal and injection."""
+        """Run a verification command safely without shell=True, strictly checking allowlist and workspace boundary."""
         t0 = time.time()
         resolved_cwd = Path(cwd).resolve()
 
-        # Enforce workspace containment and security boundary
         clean_cmd = cmd.strip()
-        if ".." in clean_cmd or "/etc/" in clean_cmd or "\\Windows\\" in clean_cmd:
-            for token in clean_cmd.split():
-                if token.startswith("..") or "/.." in token or "\\.." in token:
-                    return {
-                        "command": cmd,
-                        "passed": False,
-                        "status": "blocked",
-                        "exit_code": -1,
-                        "duration_seconds": 0.0,
-                        "output": f"Security boundary violation: path traversal not permitted in command '{cmd}'",
-                    }
+        if not clean_cmd:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "failed",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": "Empty verification command",
+            }
 
-        # Block dangerous destructive shell commands
+        # 1. Reject obvious destructive commands and subshell bombs upfront
         dangerous = ["rm -rf /", "mkfs", "format ", "del /s /q c:", ":(){ :|:& };:"]
         if any(d in clean_cmd.lower() for d in dangerous):
             return {
@@ -408,12 +472,168 @@ class ForgeCodingEngine:
                 "output": f"Security boundary violation: destructive shell command blocked: '{cmd}'",
             }
 
+        # 2. Parse command safely into tokens
         try:
-            use_shell = sys.platform == "win32"
+            raw_tokens = shlex.split(clean_cmd, posix=(sys.platform != "win32"))
+            tokens = []
+            for tok in raw_tokens:
+                if (tok.startswith('"') and tok.endswith('"') and len(tok) >= 2) or (tok.startswith("'") and tok.endswith("'") and len(tok) >= 2):
+                    tokens.append(tok[1:-1])
+                else:
+                    tokens.append(tok)
+        except Exception as parse_err:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "blocked",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: command parsing error: {parse_err}",
+            }
+
+        if not tokens:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "failed",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": "No command tokens found after parsing",
+            }
+
+        # 3. Check executable against explicit verification allowlist
+        raw_exec = tokens[0]
+        exec_stem = Path(raw_exec).stem.lower()
+        if exec_stem not in ALLOWED_VERIFICATION_EXECUTABLES:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "blocked",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": (
+                    f"Security boundary violation: executable '{raw_exec}' is not in allowed "
+                    f"verification executables: {sorted(ALLOWED_VERIFICATION_EXECUTABLES)}"
+                ),
+            }
+
+        # 4. Validate arguments: strictly reject dangerous shell operators
+        shell_chaining_tokens = {";", "&&", "||", "|", ">", ">>", "<", "<<", "&"}
+        is_python_c = (exec_stem in ("python", "python3", "py") and len(tokens) > 2 and tokens[1] == "-c")
+
+        for idx, token in enumerate(tokens):
+            if token in shell_chaining_tokens:
+                return {
+                    "command": cmd,
+                    "passed": False,
+                    "status": "blocked",
+                    "exit_code": -1,
+                    "duration_seconds": 0.0,
+                    "output": f"Security boundary violation: dangerous shell character '{token}' detected in command arguments.",
+                }
+            if is_python_c and idx == 2:
+                for op in ("`", "$(", "\n", "\r", "$"):
+                    if op in token:
+                        return {
+                            "command": cmd,
+                            "passed": False,
+                            "status": "blocked",
+                            "exit_code": -1,
+                            "duration_seconds": 0.0,
+                            "output": f"Security boundary violation: dangerous shell character '{op}' detected in argument '{token}'",
+                        }
+            else:
+                for op in (";", "&", "|", ">", "<", "$", "`", "\n", "\r"):
+                    if op in token:
+                        return {
+                            "command": cmd,
+                            "passed": False,
+                            "status": "blocked",
+                            "exit_code": -1,
+                            "duration_seconds": 0.0,
+                            "output": f"Security boundary violation: dangerous shell character '{op}' detected in argument '{token}'",
+                        }
+
+        # 5. Validate workspace directory and argument path containment
+        cfg = load_config()
+        configured_allowed = getattr(cfg.security, "allowed_dirs", None)
+        if configured_allowed:
+            allowed_dirs = configured_allowed
+            safe_by_default = False
+        else:
+            allowed_dirs = get_safe_default_dirs()
+            safe_by_default = True
+
+        if not is_path_within_allowed(resolved_cwd, allowed_dirs, safe_by_default=safe_by_default):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "blocked",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: cwd '{resolved_cwd}' is outside authorized workspace.",
+            }
+
+        # Check for path traversal in argument tokens
+        for token in tokens[1:]:
+            clean_tok = token.strip()
+            if (
+                clean_tok.startswith("..")
+                or "/.." in clean_tok
+                or "\\.." in clean_tok
+                or clean_tok == ".."
+                or "/etc/" in clean_tok
+                or "\\Windows\\" in clean_tok
+            ):
+                return {
+                    "command": cmd,
+                    "passed": False,
+                    "status": "blocked",
+                    "exit_code": -1,
+                    "duration_seconds": 0.0,
+                    "output": f"Security boundary violation: path traversal not permitted in argument '{token}'",
+                }
+            # If token references an absolute or relative path, verify containment
+            is_absolute_like = any(clean_tok.startswith(p) for p in ("/", "\\", "c:", "C:", "d:", "D:"))
+            if is_absolute_like or (clean_tok.startswith((".", "./", ".\\")) and ("/" in clean_tok or "\\" in clean_tok)):
+                try:
+                    candidate_path = (resolved_cwd / clean_tok).resolve()
+                    if not is_path_within_allowed(candidate_path, allowed_dirs):
+                        return {
+                            "command": cmd,
+                            "passed": False,
+                            "status": "blocked",
+                            "exit_code": -1,
+                            "duration_seconds": 0.0,
+                            "output": f"Security boundary violation: argument '{token}' resolves outside authorized workspace.",
+                        }
+                except Exception:
+                    pass
+
+        # 6. Resolve executable: prioritize current python virtualenv then PATH
+        venv_dir = os.path.dirname(sys.executable)
+        search_path = venv_dir + os.pathsep + os.environ.get("PATH", "")
+        if exec_stem in ("python", "python3", "py"):
+            resolved_exec = sys.executable
+        else:
+            resolved_exec = shutil.which(raw_exec, path=search_path) or shutil.which(raw_exec)
+
+        if not resolved_exec:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": "failed",
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Executable '{raw_exec}' not found in virtual environment or system PATH.",
+            }
+
+        # 7. Execute subprocess strictly with shell=False on BOTH Windows and Linux
+        try:
             proc = subprocess.run(
-                clean_cmd,
+                [resolved_exec, *tokens[1:]],
                 cwd=str(resolved_cwd),
-                shell=use_shell,
+                shell=False,  # STRICTLY False on BOTH Windows and Linux
                 capture_output=True,
                 text=True,
                 timeout=120.0,
