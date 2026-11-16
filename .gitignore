@@ -139,3 +139,6 @@ oj-debug.*.json
 
 # Node modules (root)
 node_modules/
+
+# Embedded Python runtime
+/Python/

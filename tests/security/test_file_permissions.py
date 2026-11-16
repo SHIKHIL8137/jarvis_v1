@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import tempfile
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits are not supported on Windows NTFS",
+)
 
 
 class TestSecureMkdir:

@@ -177,6 +177,12 @@ class EditTool(BaseTool):
             original.splitlines(True), updated.splitlines(True), "before", "after", n=2))[:60])
         n = len(spans) if replace_all else 1
         note = "" if how == "exact" else f" (matched with {how})"
+        try:
+            from openjarvis.coding.workspace import WorkspaceManager
+
+            WorkspaceManager.get_instance().record_change(str(path), diff)
+        except Exception:
+            pass
         return ToolResult(
             tool_name="edit", success=True,
             content=f"Edited {path}: {n} replacement(s){note}.\n{diff}",
@@ -388,3 +394,58 @@ class TodoWriteTool(BaseTool):
         done = sum(t["status"] == "completed" for t in todos)
         return ToolResult(tool_name="todo_write", success=True,
                           content=f"Todos updated ({done}/{len(todos)} done):\n{format_todos(todos)}")
+
+
+# --- project_summary --------------------------------------------------------
+
+
+@ToolRegistry.register("project_summary")
+class ProjectSummaryTool(BaseTool):
+    tool_id = "project_summary"
+
+    def __init__(self, allowed_dirs: Optional[List[str]] = None) -> None:
+        self._policy = _PathPolicy(allowed_dirs)
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="project_summary",
+            description=(
+                "Inspect the active workspace architecture, discovered test/build commands,"
+                " language distribution, project instructions (AGENTS.md/CLAUDE.md), and"
+                " session file modification ledger."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional subpath or workspace root."},
+                    "refresh": {"type": "boolean", "description": "Force refresh the inventory cache."},
+                },
+            },
+            category="project",
+            timeout_seconds=20.0,
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        from openjarvis.coding.workspace import WorkspaceManager
+
+        raw = str(params.get("path", ""))
+        root, err = self._policy.resolve(raw)
+        if root is None:
+            return _fail("project_summary", err)
+
+        mgr = WorkspaceManager.get_instance()
+        if raw:
+            try:
+                mgr.set_workspace_root(root)
+            except Exception as e:
+                return _fail("project_summary", f"Cannot switch workspace root: {e}")
+
+        refresh = bool(params.get("refresh", False))
+        summary = mgr.get_project_summary(invalidate_cache=refresh)
+        return ToolResult(
+            tool_name="project_summary",
+            success=True,
+            content=json.dumps(summary, indent=2),
+            metadata=summary,
+        )

@@ -1,0 +1,20 @@
+{
+  "test_status": "SUCCESS",
+  "task_id": "task-8a376ccee2",
+  "resumed_from_step": 1,
+  "final_status": "completed",
+  "idempotency_preserved": true,
+  "step_counts": {
+    "step-1": 1,
+    "step-2": 1,
+    "step-3": 1
+  },
+  "audit_events": [
+    "task_created",
+    "task_recovered_on_startup",
+    "step_started",
+    "step_completed",
+    "step_started",
+    "step_completed"
+  ]
+}

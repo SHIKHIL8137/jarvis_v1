@@ -199,6 +199,15 @@ class FileWriteTool(BaseTool):
         except OSError:
             size = len(content_bytes)
 
+        try:
+            from openjarvis.coding.workspace import WorkspaceManager
+
+            WorkspaceManager.get_instance().record_change(
+                str(path), f"file_write: {mode} ({size} bytes)"
+            )
+        except Exception:
+            pass
+
         return ToolResult(
             tool_name="file_write",
             content=f"Successfully wrote to {file_path}",

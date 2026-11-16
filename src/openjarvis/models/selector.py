@@ -56,6 +56,7 @@ class ModelSelectionEngine:
         self._active_local_inferences: int = 0
         self._currently_loaded_local_model: Optional[str] = None
         self._failure_history: List[Dict[str, Any]] = []
+        self.allow_paid_models: bool = False
 
         # Hardware-aware resource constraints detected dynamically
         self._hardware = detect_hardware()
@@ -99,6 +100,11 @@ class ModelSelectionEngine:
     def max_concurrent_inferences(self, val: int) -> None:
         self._max_concurrent_local = val
 
+    def select_paid_model_explicitly(self, model_id: str) -> None:
+        """Explicit gate ensuring paid models are strictly blocked when allow_paid_models is False."""
+        if not self.allow_paid_models:
+            raise PermissionError(f"Paid models are strictly prohibited by zero-cost boundary: {model_id}")
+
     @classmethod
     def get_instance(
         cls,
@@ -115,6 +121,7 @@ class ModelSelectionEngine:
         task_type: str | TaskType = TaskType.GENERAL,
         required_capabilities: Optional[List[str]] = None,
         local_only: bool = False,
+        allow_paid: Optional[bool] = None,
         preferred_model: Optional[str] = None,
         fallback_model: Optional[str] = None,
         min_context_tokens: int = 4096,
@@ -162,12 +169,23 @@ class ModelSelectionEngine:
                     raise NoCompatibleModelAvailable(msg, task_type=t_str, policy=self.policy.value)
                 return NoCompatibleModelAvailableResult(message=msg, task_type=t_str, policy=self.policy.value)
 
+            # Determine whether paid cloud models are permitted
+            # Per Zero-Cost Policy: Paid models must NEVER be activated automatically by policy alone (including CLOUD_FIRST).
+            # Default is strictly allow_paid_models (False). Only an explicit allow_paid=True argument enables it.
+            if is_privacy_strict:
+                effective_allow_paid = False
+            elif allow_paid is not None:
+                effective_allow_paid = allow_paid
+            else:
+                effective_allow_paid = getattr(self, "allow_paid_models", False)
+
             # 3. Filter eligible models with strict capability verification
             candidates = self._filter_candidates(
                 all_models=all_models,
                 task_type=t_str,
                 required_capabilities=req_caps,
                 local_only=is_privacy_strict,
+                allow_paid=effective_allow_paid,
                 min_context_tokens=min_context_tokens,
                 max_cost_per_m=max_cost_per_m,
                 confidence_policy=confidence_policy,
@@ -259,7 +277,8 @@ class ModelSelectionEngine:
         task_type: str,
         required_capabilities: Set[str],
         local_only: bool,
-        min_context_tokens: int,
+        allow_paid: bool = False,
+        min_context_tokens: int = 4096,
         max_cost_per_m: Optional[float] = None,
         confidence_policy: CapabilityConfidencePolicy | str = CapabilityConfidencePolicy.ALLOW_INFERRED,
     ) -> List[ModelCapabilityInfo]:
@@ -272,6 +291,10 @@ class ModelSelectionEngine:
 
             # 2. Strict privacy / local boundary check
             if local_only and not m.is_local:
+                continue
+
+            # 2b. Paid provider boundary check: paid models disabled by default
+            if not allow_paid and not m.is_free:
                 continue
 
             # 3. Context length boundary
@@ -392,9 +415,10 @@ class ModelSelectionEngine:
     def record_model_failure(self, model_id: str, error: str = "", task_type: str = "general") -> None:
         """Record model failure and apply runtime scoring penalty."""
         with self._lock:
+            sanitized_error = ModelDiscoveryEngine._sanitize_error_message(error)
             self._failure_history.append({
                 "model_id": model_id,
-                "error": error,
+                "error": sanitized_error,
                 "task_type": task_type,
                 "timestamp": time.time(),
             })
@@ -405,15 +429,17 @@ class ModelSelectionEngine:
         error: str,
         task_type: str,
         context: Optional[Dict[str, Any]] = None,
+        allow_paid: Optional[bool] = None,
         raise_on_none: bool = False,
     ) -> SelectionResult:
         """Handle runtime failure of a model by logging the failure, degrading its health,
         and dynamically allocating an alternative candidate. Zero hardcoded fallbacks."""
         with self._lock:
-            logger.warning("Model '%s' failed during task '%s': %s", failed_model_id, task_type, error)
+            sanitized_error = ModelDiscoveryEngine._sanitize_error_message(error)
+            logger.warning("Model '%s' failed during task '%s': %s", failed_model_id, task_type, sanitized_error)
             self._failure_history.append({
                 "model_id": failed_model_id,
-                "error": error,
+                "error": sanitized_error,
                 "task_type": task_type,
                 "timestamp": time.time(),
             })
@@ -422,7 +448,7 @@ class ModelSelectionEngine:
             failed_info = self.discovery.get_model_info(failed_model_id)
             if failed_info:
                 failed_info.health_status = "degraded"
-                failed_info.error_message = error
+                failed_info.error_message = sanitized_error
 
             # Re-select alternative excluding the failed model
             all_models = (
@@ -431,11 +457,21 @@ class ModelSelectionEngine:
                 else self.discovery.discover_all()
             )
             is_privacy_strict = (self.policy == ModelPolicy.PRIVACY_FIRST)
+            if is_privacy_strict:
+                effective_allow_paid = False
+            elif allow_paid is not None:
+                effective_allow_paid = allow_paid
+            elif self.policy == ModelPolicy.CLOUD_FIRST:
+                effective_allow_paid = True
+            else:
+                effective_allow_paid = getattr(self, "allow_paid_models", False)
+
             eligible = [
                 m for m in all_models
                 if m.model_id != failed_model_id
                 and m.health_status == "healthy"
                 and (not is_privacy_strict or m.is_local)
+                and (effective_allow_paid or m.is_free)
             ]
 
             if eligible:
@@ -450,7 +486,7 @@ class ModelSelectionEngine:
                     model_id=best_model.model_id,
                     provider=best_model.provider,
                     task_type=task_type,
-                    reason=f"Dynamic runtime fallback after '{failed_model_id}' failed with error: {error}",
+                    reason=f"Dynamic runtime fallback after '{failed_model_id}' failed with error: {sanitized_error}",
                     policy=self.policy.value,
                     is_local=best_model.is_local,
                     context_length=best_model.context_length,
@@ -482,3 +518,7 @@ def get_model_selection_engine(
     config: Optional[JarvisConfig] = None,
 ) -> ModelSelectionEngine:
     return ModelSelectionEngine.get_instance(discovery_engine=discovery_engine, config=config)
+
+
+# Alias for backward and architectural compatibility
+ModelSelector = ModelSelectionEngine

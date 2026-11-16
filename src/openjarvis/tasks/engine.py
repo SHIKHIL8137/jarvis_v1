@@ -140,14 +140,23 @@ class BackgroundTaskEngine:
         self,
         task_id: str,
         plan_steps: Optional[List[TaskStep]] = None,
+        worker_id: Optional[str] = None,
     ) -> bool:
-        """Launch background worker thread for task execution."""
+        """Launch background worker thread for task execution with exclusive leasing."""
         with self._lock:
             task = self.store.get_task(task_id)
             if not task:
                 return False
 
-            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+                return False
+
+            worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
+            # Prevent duplicate workers via exclusive lease locking
+            if not self.store.acquire_lease(task_id, worker_id, ttl_seconds=60.0):
+                logger.warning(
+                    "Cannot start task %s: active lease held by another worker", task_id
+                )
                 return False
 
             if plan_steps:
@@ -159,7 +168,7 @@ class BackgroundTaskEngine:
 
             worker = threading.Thread(
                 target=self._run_task_loop,
-                args=(task_id,),
+                args=(task_id, worker_id),
                 name=f"task-worker-{task_id}",
                 daemon=True,
             )
@@ -254,7 +263,16 @@ class BackgroundTaskEngine:
 
         return recovered_count
 
-    def _run_task_loop(self, task_id: str) -> None:
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """Gracefully stop all active workers and wait for threads to exit."""
+        with self._lock:
+            for task_id, flag in self._pause_flags.items():
+                flag.set()
+        for task_id, worker in list(self._active_workers.items()):
+            if worker.is_alive():
+                worker.join(timeout=timeout)
+
+    def _run_task_loop(self, task_id: str, worker_id: str = "") -> None:
         """Main execution loop for a background task."""
         task = self.store.get_task(task_id)
         if not task:
@@ -285,6 +303,10 @@ class BackgroundTaskEngine:
                     self.store.update_status(task_id, TaskStatus.PAUSED)
                     return
 
+                # Renew lease heartbeat
+                if worker_id:
+                    self.store.renew_lease(task_id, worker_id, ttl_seconds=60.0)
+
                 # Check budget
                 elapsed = time.time() - start_time
                 if elapsed > task.budget.max_execution_time_seconds:
@@ -298,6 +320,20 @@ class BackgroundTaskEngine:
                     return
 
                 step = task.plan[task.current_step_index]
+
+                # Dependency validation: all prerequisites must be completed
+                if step.dependencies:
+                    completed_ids = {
+                        s.step_id for s in task.plan if s.status == StepStatus.COMPLETED
+                    }
+                    unmet = [dep for dep in step.dependencies if dep not in completed_ids]
+                    if unmet:
+                        error_msg = f"Step '{step.step_id}' blocked: unmet dependencies {unmet}"
+                        step.status = StepStatus.FAILED
+                        step.error = error_msg
+                        self.store.update_status(task_id, TaskStatus.BLOCKED, error=error_msg)
+                        logger.error(error_msg)
+                        return
 
                 # Check if step was already completed (idempotency key protection)
                 if step.status == StepStatus.COMPLETED:
@@ -316,6 +352,7 @@ class BackgroundTaskEngine:
                     task.agent_profile,
                     step.tool_name,
                     agent_id=step.assigned_agent,
+                    return_details=True,
                 )
                 if not permitted:
                     step.status = StepStatus.FAILED
@@ -382,6 +419,32 @@ class BackgroundTaskEngine:
                 step_result, step_error = self._execute_step(task, step)
 
                 if step_error:
+                    # Non-idempotent tools must NOT be blindly retried on failure
+                    is_non_idempotent = (
+                        step.tool_name
+                        in (
+                            "channel_send",
+                            "send_email",
+                            "sms_send",
+                            "file_delete",
+                            "delete_file",
+                            "git_commit",
+                        )
+                        or "channel_send" in step.tool_name
+                    )
+                    if is_non_idempotent:
+                        logger.error(
+                            "Non-idempotent tool '%s' failed, refusing blind replay: %s",
+                            step.tool_name,
+                            step_error,
+                        )
+                        step.status = StepStatus.FAILED
+                        step.error = f"Non-idempotent action failure: {step_error}"
+                        self.store.update_status(
+                            task_id, TaskStatus.FAILED, error=step.error
+                        )
+                        return
+
                     task.budget.current_retries += 1
                     if task.budget.current_retries > task.budget.max_retries:
                         step.status = StepStatus.FAILED
@@ -429,9 +492,50 @@ class BackgroundTaskEngine:
             self.store.update_status(task_id, TaskStatus.FAILED, error=str(exc))
         finally:
             with self._lock:
+                if worker_id:
+                    self.store.release_lease(task_id, worker_id)
                 self._active_workers.pop(task_id, None)
                 self._pause_flags.pop(task_id, None)
                 self._cancel_flags.pop(task_id, None)
+
+    def rollback_to_checkpoint(self, task_id: str, checkpoint_id: str) -> bool:
+        """Rollback task plan context and execution progress to a previous checkpoint."""
+        with self._lock:
+            task = self.store.get_task(task_id)
+            if not task:
+                return False
+
+            latest_cp = self.store.get_latest_checkpoint(task_id)
+            if latest_cp and latest_cp.checkpoint_id == checkpoint_id:
+                cp = latest_cp
+            else:
+                cur = self.store._conn.execute(
+                    "SELECT snapshot_json FROM task_checkpoints WHERE checkpoint_id = ?",
+                    (checkpoint_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    logger.error("Rollback failed: checkpoint %s not found", checkpoint_id)
+                    return False
+                snapshot = json.loads(row["snapshot_json"])
+                cp = TaskCheckpoint(
+                    checkpoint_id=checkpoint_id,
+                    task_id=task_id,
+                    step_index=snapshot.get("step_index", 0),
+                    plan=snapshot.get("plan", []),
+                    context=snapshot.get("context", {}),
+                    artifacts=snapshot.get("artifacts", []),
+                )
+
+            task.current_step_index = cp.step_index
+            task.context = cp.context
+            task.artifacts = cp.artifacts
+            task.status = TaskStatus.PAUSED
+            self.store.save_task(task)
+            self.store.log_event(
+                task_id, "task_rollback", {"checkpoint_id": checkpoint_id, "step_index": cp.step_index}
+            )
+            return True
 
     def _generate_plan(self, task: BackgroundTask) -> List[TaskStep]:
         """Generate dynamic multi-agent execution plan for the task using AtlasOrchestrator."""
@@ -470,10 +574,12 @@ class BackgroundTaskEngine:
         profile: str,
         tool_name: str,
         agent_id: Optional[str] = None,
-    ) -> tuple[bool, Optional[str]]:
+        return_details: Optional[bool] = None,
+    ) -> bool | tuple[bool, Optional[str]]:
         """Enforce agent capability isolation and specialist permissions."""
+        as_tuple = return_details if return_details is not None else (agent_id is not None)
         if not tool_name:
-            return True, None
+            return (True, None) if as_tuple else True
 
         # Check workforce specialist manifest if agent assigned
         if agent_id:
@@ -484,19 +590,23 @@ class BackgroundTaskEngine:
                 manifest = reg.get_agent_manifest(agent_id)
                 if manifest:
                     if tool_name in manifest.denied_tools:
-                        return False, f"Agent '{agent_id}' is explicitly denied from using tool '{tool_name}'"
+                        msg = f"Agent '{agent_id}' is explicitly denied from using tool '{tool_name}'"
+                        return (False, msg) if as_tuple else False
                     if manifest.allowed_tools and tool_name not in manifest.allowed_tools:
-                        return False, f"Tool '{tool_name}' not in allowed tools for agent '{agent_id}'"
+                        msg = f"Tool '{tool_name}' not in allowed tools for agent '{agent_id}'"
+                        return (False, msg) if as_tuple else False
             except Exception as exc:
                 logger.debug("Workforce manifest lookup skipped: %s", exc)
 
         prof = CAPABILITY_PROFILES.get(profile, CAPABILITY_PROFILES.get("general", {}))
         if tool_name in prof.get("denied_tools", set()):
-            return False, f"Tool '{tool_name}' denied by capability profile '{profile}'"
+            msg = f"Tool '{tool_name}' denied by capability profile '{profile}'"
+            return (False, msg) if as_tuple else False
         allowed = prof.get("allowed_tools", set())
         if allowed and tool_name not in allowed:
-            return False, f"Tool '{tool_name}' not in allowed tools for capability profile '{profile}'"
-        return True, None
+            msg = f"Tool '{tool_name}' not in allowed tools for capability profile '{profile}'"
+            return (False, msg) if as_tuple else False
+        return (True, None) if as_tuple else True
 
     def _check_step_approval(self, task: BackgroundTask, step: TaskStep) -> tuple[bool, Optional[str]]:
         """Enforce fresh, explicit human approval for sensitive actions."""
@@ -543,10 +653,24 @@ class BackgroundTaskEngine:
         step: TaskStep,
     ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Execute step tool call using ToolRegistry."""
+        import openjarvis.tools  # noqa: F401
         from openjarvis.core.registry import ToolRegistry
 
         if not step.tool_name:
             return {"status": "ok"}, None
+
+        if not ToolRegistry.contains(step.tool_name):
+            if step.tool_name == "think":
+                try:
+                    import openjarvis.tools.think  # noqa: F401
+                except Exception:
+                    pass
+            elif step.tool_name in ("file_read", "file_write"):
+                try:
+                    import openjarvis.tools.file_read  # noqa: F401
+                    import openjarvis.tools.file_write  # noqa: F401
+                except Exception:
+                    pass
 
         if not ToolRegistry.contains(step.tool_name):
             return None, f"Tool '{step.tool_name}' not registered"

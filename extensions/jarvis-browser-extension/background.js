@@ -132,18 +132,22 @@ async function handleJarvisCommand(msg) {
       throw new Error(`Unsupported action: ${action}`);
     }
 
-    // Send successful response
+    // Collect fresh tabs immediately so the backend cache is 100% reconciled in the same turn
+    let freshTabs = [];
+    try {
+      freshTabs = await collectTabs();
+    } catch (_) {}
+
+    // Send successful response with fresh tabs
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({
         type: "command_response",
         cmd_id: cmdId,
         success: true,
-        result: result
+        result: result,
+        tabs: freshTabs
       }));
     }
-
-    // Synchronize tab list after mutations
-    setTimeout(reportTabs, 100);
 
   } catch (err) {
     console.error(`[Jarvis Extension] Error handling action ${action}:`, err);
@@ -152,7 +156,8 @@ async function handleJarvisCommand(msg) {
         type: "command_response",
         cmd_id: cmdId,
         success: false,
-        error: err.message || String(err)
+        error: err.message || String(err),
+        stale_tab_id: (action === "activate_tab" || action === "navigate_tab" || action === "close_tab") ? params?.tab_id : null
       }));
     }
   }

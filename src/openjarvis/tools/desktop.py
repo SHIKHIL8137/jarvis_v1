@@ -204,9 +204,8 @@ class OpenUrlTool(BaseTool):
 
             mgr = get_browser_manager()
             res = mgr.open_or_reuse(url, explicit_new_tab=new_tab, task_context=task_context)
-            if not res.success and not res.reused_existing:
-                webbrowser.open(url)
-                return _ok("open_url", f"Opened {url}", url=url, reused_existing=False)
+            if not res.success:
+                return _fail("open_url", f"Browser control unavailable: {res.message}")
 
             return _ok(
                 "open_url",
@@ -214,10 +213,10 @@ class OpenUrlTool(BaseTool):
                 url=url,
                 reused_existing=res.reused_existing,
                 action=res.action,
+                metadata=res.metadata or {},
             )
-        except Exception:
-            webbrowser.open(url)
-            return _ok("open_url", f"Opened {url}", url=url, reused_existing=False)
+        except Exception as exc:
+            return _fail("open_url", f"Browser control error: {exc}")
 
 
 @ToolRegistry.register("screen_ocr")

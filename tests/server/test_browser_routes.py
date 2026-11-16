@@ -1,6 +1,6 @@
 """Tests for desktop browser server API routes and WebSocket extension bridge."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
@@ -57,7 +57,7 @@ def test_open_or_reuse_tab_endpoint(client):
         reused_existing=True,
         tab=BrowserTabInfo(tab_id=1, url="https://www.linkedin.com", title="LinkedIn"),
     )
-    with patch.object(mgr, "open_or_reuse", return_value=expected_result) as mock_open:
+    with patch.object(mgr, "open_or_reuse_async", new_callable=AsyncMock, return_value=expected_result) as mock_open:
         response = client.post(
             "/v1/browser/tabs/open",
             json={"destination": "https://www.linkedin.com", "explicit_new_tab": False},
@@ -76,7 +76,7 @@ def test_open_or_reuse_tab_endpoint(client):
 
 def test_activate_tab_endpoint(client):
     mgr = get_browser_manager()
-    with patch.object(mgr, "activate_tab", return_value=True) as mock_activate:
+    with patch.object(mgr, "activate_tab_async", new_callable=AsyncMock, return_value=True) as mock_activate:
         response = client.post(
             "/v1/browser/tabs/42/activate",
             json={"window_id": 10, "title_hint": "LinkedIn"},
@@ -91,7 +91,7 @@ def test_activate_tab_endpoint(client):
 
 def test_close_tab_endpoint(client):
     mgr = get_browser_manager()
-    with patch.object(mgr, "close_tab", return_value=True) as mock_close:
+    with patch.object(mgr, "close_tab_async", new_callable=AsyncMock, return_value=True) as mock_close:
         response = client.delete("/v1/browser/tabs/42")
         assert response.status_code == 200
         data = response.json()

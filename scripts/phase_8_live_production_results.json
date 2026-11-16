@@ -1,0 +1,90 @@
+{
+  "timestamp": 1794828296.7262177,
+  "phase": 8,
+  "scenarios": {
+    "backup_and_restore": {
+      "passed": true,
+      "archive_size_bytes": 446,
+      "source_integrity": true,
+      "restored_integrity": true,
+      "restored_records_count": 2
+    },
+    "secret_scanning_and_redaction": {
+      "passed": true,
+      "findings_detected": 3,
+      "raw_log_length": 190,
+      "redacted_log_length": 125,
+      "all_secrets_scrubbed": true
+    },
+    "rate_limiting": {
+      "passed": true,
+      "burst_limit": 3,
+      "results": [
+        {
+          "request": 1,
+          "allowed": true,
+          "wait_sec": 0.0
+        },
+        {
+          "request": 2,
+          "allowed": true,
+          "wait_sec": 0.0
+        },
+        {
+          "request": 3,
+          "allowed": true,
+          "wait_sec": 0.0
+        },
+        {
+          "request": 4,
+          "allowed": false,
+          "wait_sec": 0.9999918
+        },
+        {
+          "request": 5,
+          "allowed": false,
+          "wait_sec": 0.9999913
+        }
+      ]
+    },
+    "zero_paid_boundary": {
+      "passed": true,
+      "allow_paid_models": false,
+      "paid_attempt_blocked": true,
+      "block_message": "Paid models are strictly prohibited by zero-cost boundary: gpt-4o"
+    },
+    "approval_store_gating": {
+      "passed": true,
+      "action_id": "2c1e94dcd03a",
+      "status_sequence": [
+        "pending",
+        "approved",
+        "executing",
+        "executed"
+      ],
+      "single_use_enforced": true
+    },
+    "readiness_endpoints": {
+      "passed": true,
+      "endpoints": {
+        "/ready": {
+          "status_code": 200,
+          "body": {
+            "status": "ready",
+            "engine": "ok",
+            "timestamp": 1794828297.8190305
+          }
+        },
+        "/v1/ready": {
+          "status_code": 200,
+          "body": {
+            "status": "ready",
+            "engine": "ok",
+            "timestamp": 1794828297.823031
+          }
+        }
+      }
+    }
+  },
+  "all_passed": true
+}

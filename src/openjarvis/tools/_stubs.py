@@ -202,6 +202,7 @@ class ToolExecutor:
         agent_id: str = "",
         boundary_guard: Optional[Any] = None,
         rate_limiter: Optional[Any] = None,
+        strict_validation: bool = False,
     ) -> None:
         self._tools: Dict[str, BaseTool] = {t.spec.name: t for t in tools}
         self._bus = bus
@@ -212,6 +213,7 @@ class ToolExecutor:
         self._agent_id = agent_id
         self._boundary_guard = boundary_guard
         self._rate_limiter = rate_limiter
+        self._strict_validation = strict_validation
         # Running taint accumulated across this executor's tool calls. Data
         # detected as PII/secret in one tool's output taints every later call,
         # so a sink-policy violation (e.g. secret -> http_request) is caught
@@ -289,6 +291,63 @@ class ToolExecutor:
                 ),
                 success=False,
             )
+
+        # Strict parameter schema validation when enabled
+        if self._strict_validation and isinstance(tool.spec.parameters, dict):
+            schema = tool.spec.parameters
+            required = schema.get("required", [])
+            if isinstance(required, list):
+                missing = [p for p in required if p not in params or params[p] is None]
+                if missing:
+                    return ToolResult(
+                        tool_name=tool_call.name,
+                        content=(
+                            f"Invalid arguments for tool '{tool_call.name}': missing required parameter(s): "
+                            f"{', '.join(missing)}."
+                        ),
+                        success=False,
+                    )
+            properties = schema.get("properties", {})
+            if isinstance(properties, dict):
+                for p_name, p_val in params.items():
+                    if p_name in properties and isinstance(properties[p_name], dict):
+                        expected_type = properties[p_name].get("type")
+                        if expected_type == "string" and not isinstance(p_val, str):
+                            return ToolResult(
+                                tool_name=tool_call.name,
+                                content=f"Invalid arguments for tool '{tool_call.name}': parameter '{p_name}' must be a string, got {type(p_val).__name__}.",
+                                success=False,
+                            )
+                        elif expected_type == "integer" and (not isinstance(p_val, int) or isinstance(p_val, bool)):
+                            return ToolResult(
+                                tool_name=tool_call.name,
+                                content=f"Invalid arguments for tool '{tool_call.name}': parameter '{p_name}' must be an integer, got {type(p_val).__name__}.",
+                                success=False,
+                            )
+                        elif expected_type == "number" and (not isinstance(p_val, (int, float)) or isinstance(p_val, bool)):
+                            return ToolResult(
+                                tool_name=tool_call.name,
+                                content=f"Invalid arguments for tool '{tool_call.name}': parameter '{p_name}' must be a number, got {type(p_val).__name__}.",
+                                success=False,
+                            )
+                        elif expected_type == "boolean" and not isinstance(p_val, bool):
+                            return ToolResult(
+                                tool_name=tool_call.name,
+                                content=f"Invalid arguments for tool '{tool_call.name}': parameter '{p_name}' must be a boolean, got {type(p_val).__name__}.",
+                                success=False,
+                            )
+                        elif expected_type == "array" and not isinstance(p_val, list):
+                            return ToolResult(
+                                tool_name=tool_call.name,
+                                content=f"Invalid arguments for tool '{tool_call.name}': parameter '{p_name}' must be an array, got {type(p_val).__name__}.",
+                                success=False,
+                            )
+                        elif expected_type == "object" and not isinstance(p_val, dict):
+                            return ToolResult(
+                                tool_name=tool_call.name,
+                                content=f"Invalid arguments for tool '{tool_call.name}': parameter '{p_name}' must be an object, got {type(p_val).__name__}.",
+                                success=False,
+                            )
 
         # Rate limiting — checked before any other gate so a hammering
         # agent/skill can't burn through boundary/capability/taint checks.

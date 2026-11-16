@@ -11,8 +11,10 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import threading
+from typing import Any, Callable, Dict, List, Optional
 
+from openjarvis.core.cancellation import CancellationToken
 from openjarvis.core.config import load_config
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Conversation, Message, Role, ToolResult
@@ -117,6 +119,19 @@ class BaseAgent(ABC):
                     if max_tokens is not None
                     else getattr(self, "_default_max_tokens", 1024)
                 )
+
+    @property
+    def model(self) -> str:
+        """Active model identifier."""
+        return self._model
+
+    @model.setter
+    def model(self, value: str) -> None:
+        self._model = value
+
+    def switch_model(self, model: str) -> None:
+        """Dynamically switch active model for subsequent turns while preserving state."""
+        self._model = model
 
     # ------------------------------------------------------------------
     # Concrete helpers
@@ -421,6 +436,12 @@ class ToolUsingAgent(BaseAgent):
         confirm_callback: Optional[Any] = None,
         skill_few_shot_examples: Optional[List[str]] = None,
         prompt_builder: Optional[Any] = None,
+        strict_validation: bool = False,
+        cancellation_token: Optional[threading.Event] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
+        max_wall_time_seconds: Optional[float] = None,
+        max_tool_calls: Optional[int] = None,
+        max_output_chars: int = 32_000,
     ) -> None:
         super().__init__(
             engine,
@@ -448,7 +469,13 @@ class ToolUsingAgent(BaseAgent):
             interactive=interactive,
             confirm_callback=confirm_callback,
             rate_limiter=rate_limiter,
+            strict_validation=strict_validation,
         )
+        self._cancellation_token = cancellation_token
+        self._is_cancelled_fn = is_cancelled
+        self._max_wall_time_seconds = max_wall_time_seconds
+        self._max_tool_calls = max_tool_calls
+        self._max_output_chars = max_output_chars
         # Resolve max_turns: explicit arg > config > class default > 10
         if max_turns is not None:
             self._max_turns = max_turns
@@ -472,6 +499,20 @@ class ToolUsingAgent(BaseAgent):
                 self._loop_guard = LoopGuard(loop_guard_config, bus=bus)
         except ImportError:
             pass
+
+    def is_cancelled(self) -> bool:
+        """Check whether execution has been cancelled."""
+        if self._cancellation_token is not None and self._cancellation_token.is_set():
+            return True
+        if self._is_cancelled_fn is not None and self._is_cancelled_fn():
+            return True
+        return False
+
+    def truncate_output(self, content: str) -> str:
+        """Truncate content if it exceeds max_output_chars with an explicit marker."""
+        if self._max_output_chars and len(content) > self._max_output_chars:
+            return content[: self._max_output_chars] + f"\n\n[Output truncated at {self._max_output_chars} characters]"
+        return content
 
     def _emit_turn_start(self, input: str) -> None:
         # A ToolUsingAgent instance may serve many unrelated requests. Start

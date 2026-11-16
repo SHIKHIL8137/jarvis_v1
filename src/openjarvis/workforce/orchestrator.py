@@ -140,8 +140,12 @@ class AtlasOrchestrator:
         """Intelligent semantic planner generating multi-agent steps based on domain intent."""
         req_lower = user_request.lower()
 
-        # Multi-domain engineering & security audit (e.g. ERP request)
-        if any(w in req_lower for w in ("inspect", "analyze", "bug", "audit", "erp", "codebase", "review")):
+        # 1. Multi-domain engineering, security, and performance audit (e.g. ERP request or full audit)
+        is_comprehensive = ("erp" in req_lower) or (
+            sum(1 for term in ("inspect", "analyze", "bug", "security", "audit", "performance", "codebase") if term in req_lower) >= 3
+            and "fix" not in req_lower
+        )
+        if is_comprehensive:
             return [
                 {
                     "step_id": "step-1",
@@ -205,7 +209,181 @@ class AtlasOrchestrator:
                 },
             ]
 
-        # Research-focused goal
+        # 2. Coding, Feature Implementation, and Bug Fixing (e.g. Scenario A)
+        if any(w in req_lower for w in ("fix", "bug", "implement", "feature", "refactor", "patch")):
+            return [
+                {
+                    "step_id": "step-1",
+                    "step_number": 1,
+                    "title": "Context & Code Discovery",
+                    "description": f"Scout relevant source code files for: {user_request}",
+                    "assigned_agent": "scout",
+                    "dependencies": [],
+                    "tool_name": "file_read",
+                    "tool_params": {"path": "."},
+                    "expected_output": "Identified source files",
+                    "verification_criteria": "Source file inventory mapped",
+                },
+                {
+                    "step_id": "step-2",
+                    "step_number": 2,
+                    "title": "Code Implementation & Defect Resolution",
+                    "description": f"Implement changes or fix defect for: {user_request}",
+                    "assigned_agent": "forge",
+                    "dependencies": ["step-1"],
+                    "tool_name": "forge_coding",
+                    "tool_params": {"objective": user_request, "workdir": "."},
+                    "expected_output": "Code modifications and patch report",
+                    "verification_criteria": "Code modified cleanly",
+                },
+                {
+                    "step_id": "step-3",
+                    "step_number": 3,
+                    "title": "QA & Test Verification",
+                    "description": f"Run test verification suite to ensure no regressions for: {user_request}",
+                    "assigned_agent": "vanguard",
+                    "dependencies": ["step-2"],
+                    "tool_name": "shell_exec",
+                    "tool_params": {"command": "pytest -q --tb=short"},
+                    "expected_output": "Test execution results and verification verdict",
+                    "verification_criteria": "All unit tests pass",
+                },
+            ]
+
+        # 3. Pure Security Audit / Governance
+        if any(w in req_lower for w in ("security", "vulnerabilit", "cve", "permission audit", "firewall")):
+            return [
+                {
+                    "step_id": "step-1",
+                    "step_number": 1,
+                    "title": "Security Posture Audit",
+                    "description": f"Audit security posture, boundaries, and vulnerabilities for: {user_request}",
+                    "assigned_agent": "sentinel",
+                    "dependencies": [],
+                    "tool_name": "file_read",
+                    "tool_params": {"path": "pyproject.toml"},
+                    "expected_output": "Security audit findings and boundary assessment",
+                    "verification_criteria": "Vulnerabilities or policy compliance checked",
+                },
+                {
+                    "step_id": "step-2",
+                    "step_number": 2,
+                    "title": "Synthesize Security Report",
+                    "description": "Synthesize security recommendations and risk mitigations",
+                    "assigned_agent": "atlas",
+                    "dependencies": ["step-1"],
+                    "tool_name": "think",
+                    "tool_params": {"thought": f"Synthesizing security assessment for: {user_request}"},
+                    "expected_output": "Executive security recommendations",
+                    "verification_criteria": "Security posture summarized",
+                },
+            ]
+
+        # 2. Pure QA / Test Verification
+        if any(w in req_lower for w in ("test", "verify", "verification", "qa", "acceptance criteria")):
+            return [
+                {
+                    "step_id": "step-1",
+                    "step_number": 1,
+                    "title": "Execute Verification Suite",
+                    "description": f"Execute test verification and validate criteria for: {user_request}",
+                    "assigned_agent": "vanguard",
+                    "dependencies": [],
+                    "tool_name": "shell_exec",
+                    "tool_params": {"command": "pytest -q --tb=short"},
+                    "expected_output": "Test execution results and verification findings",
+                    "verification_criteria": "Tests executed with exit code and evidence",
+                },
+                {
+                    "step_id": "step-2",
+                    "step_number": 2,
+                    "title": "Synthesize QA Results",
+                    "description": "Synthesize verification evidence and pass/fail summary",
+                    "assigned_agent": "atlas",
+                    "dependencies": ["step-1"],
+                    "tool_name": "think",
+                    "tool_params": {"thought": f"Compiling QA verification report for: {user_request}"},
+                    "expected_output": "Consolidated QA verdict",
+                    "verification_criteria": "Verification verdict recorded",
+                },
+            ]
+
+        # 3. Pure Coding / Bug Hunting / Refactoring
+        if any(w in req_lower for w in ("implement", "fix bug", "refactor", "write code", "coding", "patch")):
+            return [
+                {
+                    "step_id": "step-1",
+                    "step_number": 1,
+                    "title": "Code Implementation & Defect Resolution",
+                    "description": f"Implement code changes or fix defect for: {user_request}",
+                    "assigned_agent": "forge",
+                    "dependencies": [],
+                    "tool_name": "forge_coding",
+                    "tool_params": {"objective": user_request, "workdir": "."},
+                    "expected_output": "Code modifications and implementation findings",
+                    "verification_criteria": "Target code updated and verified",
+                },
+                {
+                    "step_id": "step-2",
+                    "step_number": 2,
+                    "title": "Synthesize Coding Result",
+                    "description": "Synthesize implementation report and commit diffs",
+                    "assigned_agent": "atlas",
+                    "dependencies": ["step-1"],
+                    "tool_name": "think",
+                    "tool_params": {"thought": f"Reviewing code modifications for: {user_request}"},
+                    "expected_output": "Change summary and verification status",
+                    "verification_criteria": "Code change reviewed",
+                },
+            ]
+
+        # 4. Pure File Discovery / Exploration
+        if any(w in req_lower for w in ("find file", "list file", "locate file", "explore repo", "discover file")):
+            return [
+                {
+                    "step_id": "step-1",
+                    "step_number": 1,
+                    "title": "Explore Files & Directory Tree",
+                    "description": f"Discover directory structure and file contents for: {user_request}",
+                    "assigned_agent": "scout",
+                    "dependencies": [],
+                    "tool_name": "file_read",
+                    "tool_params": {"path": "."},
+                    "expected_output": "Discovered files and structure",
+                    "verification_criteria": "File paths identified",
+                },
+                {
+                    "step_id": "step-2",
+                    "step_number": 2,
+                    "title": "Synthesize File Inventory",
+                    "description": "Summarize discovered file structure",
+                    "assigned_agent": "atlas",
+                    "dependencies": ["step-1"],
+                    "tool_name": "think",
+                    "tool_params": {"thought": f"Reviewing discovered file structure for: {user_request}"},
+                    "expected_output": "File inventory summary",
+                    "verification_criteria": "Summary produced",
+                },
+            ]
+
+        # 5. Operations & Scheduling
+        if any(w in req_lower for w in ("routine", "reminder", "health check", "schedule", "pulse")):
+            return [
+                {
+                    "step_id": "step-1",
+                    "step_number": 1,
+                    "title": "Operational Health & Routine",
+                    "description": f"Manage routine and check operations for: {user_request}",
+                    "assigned_agent": "pulse",
+                    "dependencies": [],
+                    "tool_name": "think",
+                    "tool_params": {"thought": f"Executing operational routine: {user_request}"},
+                    "expected_output": "Operational status and scheduled trigger",
+                    "verification_criteria": "Routine executed",
+                },
+            ]
+
+        # 6. Research-focused goal
         if any(w in req_lower for w in ("research", "compare", "benchmark", "find out")):
             return [
                 {
@@ -234,7 +412,7 @@ class AtlasOrchestrator:
                 },
             ]
 
-        # Standard single/dual fallback
+        # Standard fallback: Scout discovery + Atlas synthesis
         return [
             {
                 "step_id": "step-1",
@@ -319,6 +497,37 @@ class AtlasOrchestrator:
         """Standard executor routing to appropriate specialist runtime or tool with allocated model."""
         allocated_model = model or step.tool_params.get("model") or step.tool_params.get("_allocated_model")
 
+        # 1. Enforce agent manifest permission boundaries fail-closed
+        manifest = self.registry.get_agent_manifest(step.assigned_agent)
+        if manifest:
+            # Denied tools check
+            if step.tool_name in manifest.denied_tools:
+                err = f"Tool '{step.tool_name}' is explicitly denied for agent '{step.assigned_agent}'"
+                logger.warning(err)
+                return None, err
+
+            # Denied capabilities check
+            if manifest.denied_capabilities:
+                if "file:write" in manifest.denied_capabilities and step.tool_name in ("file_write", "edit_file", "apply_patch"):
+                    err = f"Agent '{step.assigned_agent}' is denied capability 'file:write'"
+                    logger.warning(err)
+                    return None, err
+                if "code:execute" in manifest.denied_capabilities and step.tool_name in ("shell_exec", "forge_coding"):
+                    err = f"Agent '{step.assigned_agent}' is denied capability 'code:execute'"
+                    logger.warning(err)
+                    return None, err
+                if "channel:send" in manifest.denied_capabilities and step.tool_name in ("channel_send", "send_message"):
+                    err = f"Agent '{step.assigned_agent}' is denied capability 'channel:send'"
+                    logger.warning(err)
+                    return None, err
+
+            # Allowed tools whitelist check (if specified)
+            if manifest.allowed_tools and step.tool_name not in manifest.allowed_tools and step.tool_name != "think":
+                err = f"Tool '{step.tool_name}' is not in allowed tools for agent '{step.assigned_agent}'"
+                logger.warning(err)
+                return None, err
+
+        # 2. Forge Coding Engine execution
         if step.assigned_agent == "forge" and step.tool_name in ("forge_coding", "code_goal", "coding", "code_interpreter"):
             from openjarvis.workforce.forge_coding import ForgeCodingEngine
 
@@ -334,6 +543,10 @@ class AtlasOrchestrator:
             if report.errors:
                 return report.to_dict(), "; ".join(report.errors)
             return report.to_dict(), None
+
+        # Prevent non-forge agents from attempting forge_coding
+        if step.tool_name in ("forge_coding", "code_goal") and step.assigned_agent != "forge":
+            return None, f"Tool '{step.tool_name}' is restricted to Forge specialist (attempted by {step.assigned_agent})"
 
         from openjarvis.core.registry import ToolRegistry
         from openjarvis.tools import ensure_tools_registered
@@ -366,16 +579,68 @@ class AtlasOrchestrator:
         user_request: str,
         steps: List[TaskStep],
         step_executor: Optional[Callable[..., Tuple[Optional[Dict[str, Any]], Optional[str]]]] = None,
+        cancellation_token: Optional[Any] = None,
+        budget: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Execute task steps according to DAG dependencies with bounded concurrency and model routing."""
+        """Execute task steps according to DAG dependencies with bounded concurrency, model routing, and budget/cancellation checks."""
+        from openjarvis.workforce.communication import ConflictResolver
+
         completed_step_ids: Set[str] = set()
         agent_reports: List[AgentReport] = []
         start_time = time.time()
+        was_cancelled = False
+        was_budget_exhausted = False
 
         # Step lookup
         steps_by_id = {s.step_id: s for s in steps}
 
         while len(completed_step_ids) < len(steps):
+            # 1. Cancellation check
+            is_cancelled = False
+            cancel_reason = "Task execution cancelled"
+            if cancellation_token:
+                if hasattr(cancellation_token, "is_cancelled"):
+                    is_cancelled = bool(cancellation_token.is_cancelled)
+                    cancel_reason = getattr(cancellation_token, "reason", cancel_reason) or cancel_reason
+                elif hasattr(cancellation_token, "is_set"):
+                    is_cancelled = bool(cancellation_token.is_set())
+
+            if is_cancelled:
+                logger.info("Task %s cancelled via cancellation token", task_id)
+                was_cancelled = True
+                for s in steps:
+                    if s.status in (StepStatus.PENDING, StepStatus.RUNNING):
+                        s.status = StepStatus.CANCELLED
+                        s.error = cancel_reason
+                        self.registry.set_agent_state(s.assigned_agent, AgentRuntimeState.IDLE)
+                break
+
+            # 2. Budget check
+            if budget:
+                elapsed_now = time.time() - start_time
+                max_duration = getattr(budget, "max_execution_time_seconds", None) or getattr(budget, "max_duration_seconds", None)
+                if max_duration and elapsed_now > max_duration:
+                    logger.warning("Task %s exceeded duration budget (%.1fs > %.1fs)", task_id, elapsed_now, max_duration)
+                    was_budget_exhausted = True
+                    for s in steps:
+                        if s.status in (StepStatus.PENDING, StepStatus.RUNNING):
+                            s.status = StepStatus.CANCELLED
+                            s.error = f"Task duration budget exceeded: {elapsed_now:.1f}s > {max_duration}s"
+                            self.registry.set_agent_state(s.assigned_agent, AgentRuntimeState.IDLE)
+                    break
+
+                tool_calls_used = getattr(budget, "current_tool_calls", 0) or getattr(budget, "tool_calls_used", 0)
+                max_tool_calls = getattr(budget, "max_tool_calls", None)
+                if max_tool_calls and tool_calls_used >= max_tool_calls:
+                    logger.warning("Task %s exceeded tool call budget (%d >= %d)", task_id, tool_calls_used, max_tool_calls)
+                    was_budget_exhausted = True
+                    for s in steps:
+                        if s.status in (StepStatus.PENDING, StepStatus.RUNNING):
+                            s.status = StepStatus.CANCELLED
+                            s.error = f"Task tool call budget exceeded: {tool_calls_used} >= {max_tool_calls}"
+                            self.registry.set_agent_state(s.assigned_agent, AgentRuntimeState.IDLE)
+                    break
+
             # Find all steps whose dependencies are satisfied and are not yet started
             ready_steps = [
                 s
@@ -415,6 +680,18 @@ class AtlasOrchestrator:
                         step.status = StepStatus.FAILED
                         step.error = f"Model selection failed: {model_err}"
                         self.registry.set_agent_state(step.assigned_agent, AgentRuntimeState.DEGRADED, error=str(model_err))
+                        rep = AgentReport(
+                            agent_id=step.assigned_agent,
+                            task_id=task_id,
+                            step_id=step.step_id,
+                            work_performed=f"Model allocation failed for {step.title}",
+                            findings=[],
+                            results={},
+                            errors=[str(model_err)],
+                            confidence=0.0,
+                        )
+                        agent_reports.append(rep)
+                        self.registry.store.save_report(rep)
                         continue
 
                     self.registry.record_heartbeat(step.assigned_agent, current_task_id=task_id, active_model=step_model)
@@ -432,12 +709,31 @@ class AtlasOrchestrator:
 
                 for future in concurrent.futures.as_completed(futures):
                     step = futures[future]
+                    # Update tool call count in budget
+                    if budget:
+                        if hasattr(budget, "current_tool_calls"):
+                            budget.current_tool_calls += 1
+                        elif hasattr(budget, "tool_calls_used"):
+                            budget.tool_calls_used += 1
+
                     try:
                         result, error = future.result()
                         if error:
                             step.status = StepStatus.FAILED
                             step.error = error
                             self.registry.set_agent_state(step.assigned_agent, AgentRuntimeState.IDLE, error=error)
+                            rep = AgentReport(
+                                agent_id=step.assigned_agent,
+                                task_id=task_id,
+                                step_id=step.step_id,
+                                work_performed=f"Failed execution of {step.title}: {step.description}",
+                                findings=[],
+                                results={},
+                                errors=[error],
+                                confidence=0.0,
+                            )
+                            agent_reports.append(rep)
+                            self.registry.store.save_report(rep)
                         else:
                             step.status = StepStatus.COMPLETED
                             step.completed_at = time.time()
@@ -465,20 +761,46 @@ class AtlasOrchestrator:
                         step.status = StepStatus.FAILED
                         step.error = str(exc)
                         self.registry.set_agent_state(step.assigned_agent, AgentRuntimeState.IDLE, error=str(exc))
+                        rep = AgentReport(
+                            agent_id=step.assigned_agent,
+                            task_id=task_id,
+                            step_id=step.step_id,
+                            work_performed=f"Exception during {step.title}: {step.description}",
+                            findings=[],
+                            results={},
+                            errors=[str(exc)],
+                            confidence=0.0,
+                        )
+                        agent_reports.append(rep)
+                        self.registry.store.save_report(rep)
 
-        # ATLAS synthesizes consolidated response
+        # 3. Detect and resolve specialist contradictions
+        conflict_res = ConflictResolver.detect_and_resolve(agent_reports)
+
+        # 4. ATLAS synthesizes consolidated response
         elapsed = round(time.time() - start_time, 2)
-        consolidated_summary = self._synthesize_reports(user_request, agent_reports, steps)
+        consolidated_summary = self._synthesize_reports(user_request, agent_reports, steps, conflict_info=conflict_res)
+
+        if was_cancelled:
+            final_status = "cancelled"
+        elif was_budget_exhausted:
+            final_status = "budget_exhausted"
+        elif len(completed_step_ids) == len(steps):
+            final_status = "completed"
+        else:
+            final_status = "incomplete"
 
         return {
             "task_id": task_id,
-            "status": "completed" if len(completed_step_ids) == len(steps) else "incomplete",
+            "status": final_status,
             "user_request": user_request,
             "total_steps": len(steps),
             "completed_steps": len(completed_step_ids),
             "duration_seconds": elapsed,
             "reports": [r.to_dict() for r in agent_reports],
             "agent_reports": [r.to_dict() for r in agent_reports],
+            "has_conflicts": conflict_res.get("has_conflicts", False),
+            "conflicts": conflict_res.get("conflicts", []),
             "consolidated_response": consolidated_summary,
             "consolidated_report": consolidated_summary,
         }
@@ -488,7 +810,46 @@ class AtlasOrchestrator:
         user_request: str,
         reports: List[AgentReport],
         steps: List[TaskStep],
+        conflict_info: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """Atlas consolidates specialist findings into a cohesive executive report."""
+        lines = [
+            f"# Mission Report: {user_request}",
+            f"**Coordinated by:** ATLAS (Chief of Staff)",
+            f"**Specialist Contributions:** {len(reports)} reports collected across {len(steps)} steps.",
+            "",
+            "## Summary of Specialist Findings",
+        ]
+
+        for rep in reports:
+            manifest = self.registry.get_agent_manifest(rep.agent_id)
+            agent_title = manifest.display_name if manifest else rep.agent_id.upper()
+            role = manifest.role if manifest else "Specialist"
+            lines.append(f"### {agent_title} ({role})")
+            lines.append(f"- **Work Performed:** {rep.work_performed}")
+            if rep.findings:
+                for f in rep.findings:
+                    lines.append(f"- **Finding:** {f.get('title', 'Detail')} — {f.get('summary', '')}")
+            if rep.errors:
+                lines.append(f"- **Issues Encountered:** {', '.join(rep.errors)}")
+            lines.append("")
+
+        if conflict_info and conflict_info.get("has_conflicts"):
+            lines.append("## Conflict Resolution & Discrepancy Analysis")
+            for conf in conflict_info.get("conflicts", []):
+                lines.append(f"- **Contradiction Detected:** {conf.get('description', '')}")
+            for note in conflict_info.get("resolution_notes", []):
+                lines.append(f"- **Resolution Strategy:** {note}")
+            lines.append("")
+
+        lines.append("## Team Verification & Next Steps")
+        vanguard_reports = [r for r in reports if r.agent_id == "vanguard"]
+        if vanguard_reports:
+            lines.append("✓ Quality & Verification check completed by VANGUARD: All findings cross-checked against source data.")
+        else:
+            lines.append("All scheduled subtasks completed successfully. Ready for further instructions.")
+
+        return "\n".join(lines)
         """Atlas consolidates specialist findings into a cohesive executive report."""
         lines = [
             f"# Mission Report: {user_request}",

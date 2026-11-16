@@ -25,6 +25,7 @@ _LANG_TO_KOKORO_VOICE: Dict[str, str] = {
 LANGUAGE_NAMES: Dict[str, str] = {
     "en": "English",
     "hi": "Hindi",
+    "ml": "Malayalam",
     "es": "Spanish",
     "fr": "French",
     "it": "Italian",
@@ -39,11 +40,24 @@ LANGUAGE_NAMES: Dict[str, str] = {
 # Script heuristics for instant detection on text
 _SCRIPT_PATTERNS: list[Tuple[re.Pattern, str]] = [
     (re.compile(r"[\u3040-\u309F\u30A0-\u30FF]"), "ja"),  # Hiragana/Katakana (Japanese) - check before CJK
+    (re.compile(r"[\u0D00-\u0D7F]"), "ml"),  # Malayalam script
     (re.compile(r"[\u0900-\u097F]"), "hi"),  # Devanagari (Hindi, Marathi, Sanskrit)
     (re.compile(r"[\u4E00-\u9FFF]"), "zh"),  # CJK Unified Ideographs (Chinese)
     (re.compile(r"[\u0400-\u04FF]"), "ru"),  # Cyrillic
     (re.compile(r"[\u0600-\u06FF]"), "ar"),  # Arabic
 ]
+
+# Romanized Malayalam / Manglish common words
+_MALAYALAM_ROMANIZED_PATTERN = re.compile(
+    r"\b(entha|enthe|sukhamano|namaskaram|evide|nannayittundu|engane|undo|aano|poyi|vannu|sheriyano|karyam|ippol|athe|illa)\b",
+    re.IGNORECASE,
+)
+
+# Common conversational English greetings that must never be falsely translated
+_ENGLISH_GREETING_PATTERN = re.compile(
+    r"^\s*(how are you|hello|hi|hey|good morning|good evening|good afternoon|what's up|how's it going|how do you do|nice to meet you|thank you|thanks)[.?!]?\s*$",
+    re.IGNORECASE,
+)
 
 
 class LanguageManager:
@@ -65,30 +79,50 @@ class LanguageManager:
         if not text:
             return self._active_language
 
-        # If whisper provided high-confidence detection for non-English, check it
-        if whisper_detected and whisper_detected != "en" and whisper_detected in LANGUAGE_NAMES:
-            self._active_language = whisper_detected
-            return whisper_detected
+        stripped = text.strip()
 
-        # Check script patterns
+        # Guard: Common conversational English greetings must never be falsely translated
+        if _ENGLISH_GREETING_PATTERN.match(stripped):
+            self._active_language = "en"
+            return "en"
+
+        # Check script patterns (Japanese, Malayalam, Hindi, Chinese, Cyrillic, Arabic)
         for pattern, lang_code in _SCRIPT_PATTERNS:
-            if pattern.search(text):
+            if pattern.search(stripped):
                 self._active_language = lang_code
                 return lang_code
 
+        # Check for Romanized Malayalam / Manglish
+        if _MALAYALAM_ROMANIZED_PATTERN.search(stripped):
+            self._active_language = "ml"
+            return "ml"
+
         # Check for Spanish/French/German diacritics
-        if re.search(r"[áéíóúüñ¿¡]", text, re.IGNORECASE):
+        if re.search(r"[áéíóúüñ¿¡]", stripped, re.IGNORECASE):
             self._active_language = "es"
             return "es"
-        if re.search(r"[àâçéèêëîïôûùüÿœæ]", text, re.IGNORECASE):
+        if re.search(r"[àâçéèêëîïôûùüÿœæ]", stripped, re.IGNORECASE):
             self._active_language = "fr"
             return "fr"
-        if re.search(r"[äöüß]", text, re.IGNORECASE):
+        if re.search(r"[äöüß]", stripped, re.IGNORECASE):
             self._active_language = "de"
             return "de"
 
+        # Check Whisper detection if provided and text does not look like obvious English
+        if whisper_detected and whisper_detected in LANGUAGE_NAMES and whisper_detected != "en":
+            has_common_english = bool(
+                re.search(
+                    r"\b(the|is|at|which|on|how|are|you|what|where|who|why|can|could|would|please|this|that|with)\b",
+                    stripped,
+                    re.IGNORECASE,
+                )
+            )
+            if not has_common_english:
+                self._active_language = whisper_detected
+                return whisper_detected
+
         # Check for English / Latin ASCII
-        if re.search(r"[A-Za-z]", text):
+        if re.search(r"[A-Za-z]", stripped):
             self._active_language = "en"
             return "en"
 

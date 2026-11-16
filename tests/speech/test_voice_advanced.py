@@ -81,6 +81,13 @@ class TestLanguageManager:
         assert lm.detect_language("こんにちは世界") == "ja"
         # Chinese
         assert lm.detect_language("你好世界") == "zh"
+        # Malayalam script
+        assert lm.detect_language("സുഖമാണോ") == "ml"
+        # Manglish / Romanized Malayalam
+        assert lm.detect_language("sukhamano evide poyi?") == "ml"
+        # English greeting guard preserves English even if Whisper falsely detects non-English
+        assert lm.detect_language("How are you?", whisper_detected="hi") == "en"
+        assert lm.detect_language("Hello", whisper_detected="de") == "en"
         # English
         assert lm.detect_language("Hello how are you doing today?") == "en"
 

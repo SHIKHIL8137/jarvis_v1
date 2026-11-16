@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 import weakref
 from dataclasses import replace
@@ -1508,13 +1509,28 @@ async def server_info(request: Request):
 
 
 @router.get("/health")
+@router.get("/v1/health")
 async def health(request: Request):
     """Health check endpoint."""
     engine = request.app.state.engine
-    healthy = engine.health()
+    healthy = engine.health() if engine else True
     if not healthy:
         raise HTTPException(status_code=503, detail="Engine unhealthy")
     return {"status": "ok"}
+
+
+@router.get("/ready")
+@router.get("/v1/ready")
+async def readiness(request: Request):
+    """Readiness probe endpoint ensuring engine and state stores are ready."""
+    engine = getattr(request.app.state, "engine", None)
+    if engine is not None and not engine.health():
+        raise HTTPException(status_code=503, detail="Inference engine not ready")
+    return {
+        "status": "ready",
+        "engine": "ok" if engine else "deferred",
+        "timestamp": time.time(),
+    }
 
 
 # ---------------------------------------------------------------------------

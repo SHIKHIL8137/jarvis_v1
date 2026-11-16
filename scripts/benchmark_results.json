@@ -1,0 +1,59 @@
+{
+  "ollama_qwen3_4b_instruct": {
+    "provider": "ollama",
+    "model": "qwen3:4b-instruct",
+    "basic_prompt": "15 + 27",
+    "basic_response": "42",
+    "latency_ms": 611.46,
+    "eval_tokens": 3,
+    "eval_duration_ms": 337.42,
+    "tokens_per_sec": 8.89,
+    "structured_json_latency_ms": 1400.33,
+    "structured_json_valid": true,
+    "structured_json_response": "{\n  \"status\": \"success\",\n  \"code\": 200\n}"
+  },
+  "discovery": {
+    "total_models": 36,
+    "free_models": 36,
+    "local_models": 36,
+    "providers_registered": [
+      "nim",
+      "uzu",
+      "vllm",
+      "ollama",
+      "lmstudio",
+      "openai",
+      "anthropic",
+      "google",
+      "deepseek",
+      "openrouter",
+      "atlascloud",
+      "minimax"
+    ]
+  },
+  "selection": {
+    "coding_task": {
+      "model_id": "nvidia/riva-translate-4b-instruct-v2",
+      "provider": "nim",
+      "is_local": true,
+      "score": 100.0
+    },
+    "fast_chat": {
+      "model_id": "nvidia/riva-translate-4b-instruct-v2",
+      "provider": "nim",
+      "is_local": true,
+      "score": 100.0
+    },
+    "privacy_first": {
+      "model_id": "nvidia/riva-translate-4b-instruct-v2",
+      "provider": "nim",
+      "is_local": true,
+      "score": 115.0
+    }
+  },
+  "failover": {
+    "original_model": "nvidia/riva-translate-4b-instruct-v2",
+    "failover_model": "bigcode/starcoder2-15b",
+    "secret_scrubbed": true
+  }
+}

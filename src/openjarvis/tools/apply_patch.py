@@ -329,6 +329,13 @@ class ApplyPatchTool(BaseTool):
         if backup_path:
             metadata["backup_path"] = backup_path
 
+        try:
+            from openjarvis.coding.workspace import WorkspaceManager
+
+            WorkspaceManager.get_instance().record_change(str(path), patch_text)
+        except Exception:
+            pass
+
         return ToolResult(
             tool_name="apply_patch",
             content=f"Patch applied successfully ({len(hunks)} hunk(s)).",

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
+import subprocess
 import time
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
@@ -14,6 +16,29 @@ from openjarvis.browser.models import BrowserTabInfo, BrowserWindowInfo
 from openjarvis.core.paths import get_config_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _write_token_securely(token_file, token: str) -> None:
+    """Persist the extension token with restrictive file permissions on Windows/POSIX."""
+    try:
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token, encoding="utf-8")
+        try:
+            os.chmod(token_file, 0o600)
+        except Exception:
+            pass
+
+        # Apply Windows ACL to restrict file access to current user only
+        user = os.environ.get("USERNAME")
+        if user and os.name == "nt":
+            subprocess.run(
+                ["icacls", str(token_file), "/inheritance:r", "/grant:r", f"{user}:F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+    except Exception as exc:
+        logger.debug("Could not set restrictive permissions on browser extension token: %s", exc)
 
 
 def _get_or_create_browser_token() -> str:
@@ -28,11 +53,7 @@ def _get_or_create_browser_token() -> str:
         pass
 
     new_token = secrets.token_urlsafe(32)
-    try:
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(new_token, encoding="utf-8")
-    except Exception as exc:
-        logger.debug("Could not write browser extension token file: %s", exc)
+    _write_token_securely(token_file, new_token)
     return new_token
 
 
@@ -42,20 +63,26 @@ class ExtensionBridge:
     def __init__(self) -> None:
         self.token = _get_or_create_browser_token()
         self._connected = False
-        self._last_heartbeat = 0.0
+        self._last_heartbeat = time.time()
         self._tabs_cache: List[BrowserTabInfo] = []
         self._windows_cache: List[BrowserWindowInfo] = []
         self._active_ws = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pending_commands: Dict[str, asyncio.Future[Any]] = {}
         self._command_counter = 0
         self._state_callbacks: List[Callable[[bool], None]] = []
 
     @property
+    def loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """Event loop where WebSocket connection lives."""
+        return self._loop
+
+    @property
     def is_connected(self) -> bool:
-        """Check if browser extension is actively connected and heartbeat is fresh (within 30s)."""
+        """Check if browser extension is actively connected and heartbeat is fresh (within 35s)."""
         if not self._connected:
             return False
-        if time.time() - self._last_heartbeat > 35.0:
+        if self._last_heartbeat > 0 and time.time() - self._last_heartbeat > 35.0:
             self._connected = False
             return False
         return True
@@ -64,10 +91,28 @@ class ExtensionBridge:
         self._state_callbacks.append(cb)
 
     def validate_token(self, provided_token: Optional[str]) -> bool:
-        """Verify token matches the authorized pairing secret."""
+        """Verify token matches the authorized pairing secret using constant-time comparison."""
         if not provided_token or not self.token:
             return False
         return secrets.compare_digest(provided_token.strip(), self.token.strip())
+
+    def regenerate_token(self) -> str:
+        """Regenerate pairing token, invalidate current connection, and persist securely."""
+        new_token = secrets.token_urlsafe(32)
+        token_file = get_config_dir() / "browser_extension_token.key"
+        _write_token_securely(token_file, new_token)
+        self.token = new_token
+
+        # Terminate any active connection so it must re-pair
+        if self._active_ws is not None:
+            try:
+                loop = self._loop or asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(self._active_ws.close(code=1008))
+            except Exception:
+                pass
+            self.on_ws_disconnect()
+        return new_token
 
     def update_tabs(self, raw_tabs: List[Dict[str, Any]]) -> None:
         """Update cached tab and window information from extension payload."""
@@ -122,6 +167,10 @@ class ExtensionBridge:
             for wid, wtabs in windows_map.items()
         ]
 
+    def remove_tab_from_cache(self, tab_id: str | int) -> None:
+        """Purge a stale or closed tab ID from local cache."""
+        self._tabs_cache = [t for t in self._tabs_cache if str(t.tab_id) != str(tab_id)]
+
     def get_tabs(self) -> List[BrowserTabInfo]:
         """Return the current cached list of open browser tabs."""
         return list(self._tabs_cache)
@@ -138,7 +187,10 @@ class ExtensionBridge:
         return self._tabs_cache[0] if self._tabs_cache else None
 
     async def send_command(self, action: str, params: Dict[str, Any], timeout: float = 8.0) -> Any:
-        """Send a command to the browser extension and await response."""
+        """Send a command to the browser extension and await confirmation response."""
+        if not self.is_connected or self._active_ws is None:
+            raise ConnectionError("Browser extension is not connected")
+
         self._command_counter += 1
         cmd_id = f"cmd_{self._command_counter}_{int(time.time()*1000)}"
 
@@ -148,17 +200,19 @@ class ExtensionBridge:
             "params": params,
         }
 
-        loop = asyncio.get_running_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = self._loop or asyncio.get_event_loop()
+
         future: asyncio.Future[Any] = loop.create_future()
         self._pending_commands[cmd_id] = future
 
         try:
-            if self._active_ws is not None:
-                await self._active_ws.send_text(json.dumps(payload))
-            else:
-                raise RuntimeError("No active WebSocket connection to browser extension")
-
+            await self._active_ws.send_text(json.dumps(payload))
             return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Extension command '{action}' timed out after {timeout}s")
         except Exception:
             raise
         finally:
@@ -186,6 +240,15 @@ class ExtensionBridge:
         # 2. Command response
         if msg_type == "command_response" or "cmd_id" in data:
             cmd_id = data.get("cmd_id") or data.get("id")
+
+            # If response contains reconciled tab state, update immediately
+            if "tabs" in data and isinstance(data["tabs"], list):
+                self.update_tabs(data["tabs"])
+
+            # If stale tab ID was reported, remove from cache
+            if data.get("stale_tab_id"):
+                self.remove_tab_from_cache(data["stale_tab_id"])
+
             if cmd_id in self._pending_commands:
                 fut = self._pending_commands[cmd_id]
                 if not fut.done():
@@ -198,18 +261,22 @@ class ExtensionBridge:
         # 3. Tab activated event
         if msg_type == "tab_activated":
             tab_id = data.get("tab_id")
-            window_id = data.get("window_id")
             for t in self._tabs_cache:
-                t.is_active = (t.tab_id == tab_id)
+                t.is_active = (str(t.tab_id) == str(tab_id))
             return {"status": "updated"}
 
         return {"status": "received"}
 
-    def on_ws_connect(self, ws: Any) -> None:
+    def on_ws_connect(self, ws: Any, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Handle new WebSocket connection from extension."""
         self._active_ws = ws
         self._connected = True
         self._last_heartbeat = time.time()
+        try:
+            self._loop = loop or asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = loop
+
         for cb in self._state_callbacks:
             try:
                 cb(True)

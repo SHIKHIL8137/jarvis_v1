@@ -6,8 +6,9 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,17 @@ def build_safe_env(
 
 def kill_process_tree(pid: int) -> None:
     """Kill a process and all its children (best effort)."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                check=False,
+            )
+        except Exception as exc:
+            logger.debug("Failed to taskkill process %d: %s", pid, exc)
+        return
+
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
     except (OSError, ProcessLookupError) as exc:
@@ -89,21 +101,30 @@ def run_sandboxed(
     - New process group for clean cleanup
     """
     env = build_safe_env(passthrough=env_passthrough, extra=env_extra)
+    if sys.platform == "win32":
+        for k in ("SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "TMP"):
+            val = os.environ.get(k)
+            if val is not None:
+                env.setdefault(k, val)
+
     cwd = working_dir if working_dir and os.path.isdir(working_dir) else None
 
     result = SandboxResult()
     try:
-        proc = subprocess.Popen(
-            command,
-            # This API explicitly runs caller-provided shell commands.
-            shell=True,  # nosec B602
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            cwd=cwd,
-            preexec_fn=os.setsid,  # New process group
-        )
+        popen_kwargs: Dict[str, Any] = {
+            "shell": True,  # nosec B602
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "env": env,
+            "cwd": cwd,
+        }
+        if sys.platform != "win32":
+            popen_kwargs["preexec_fn"] = os.setsid
+        else:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+        proc = subprocess.Popen(command, **popen_kwargs)
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
             result.stdout = stdout[:max_output_bytes] if stdout else ""

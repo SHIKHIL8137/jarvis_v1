@@ -10,13 +10,16 @@ from typing import Any, Dict, List, Optional
 
 
 class TaskStatus(str, Enum):
-    """10-state lifecycle for persistent autonomous background tasks."""
+    """Lifecycle states for persistent autonomous background tasks."""
 
     CREATED = "created"
+    QUEUED = "queued"
     PLANNING = "planning"
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
+    RETRYING = "retrying"
     PAUSED = "paused"
+    BLOCKED = "blocked"
     RECOVERING = "recovering"
     VERIFYING = "verifying"
     COMPLETED = "completed"
@@ -31,6 +34,7 @@ class StepStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -53,6 +57,8 @@ class TaskStep:
     dependencies: List[str] = field(default_factory=list)
     expected_output: str = ""
     verification_criteria: str = ""
+    parent_task_id: Optional[str] = None
+    child_task_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -83,6 +89,8 @@ class TaskStep:
             dependencies=data.get("dependencies") or [],
             expected_output=data.get("expected_output", ""),
             verification_criteria=data.get("verification_criteria", ""),
+            parent_task_id=data.get("parent_task_id"),
+            child_task_id=data.get("child_task_id"),
         )
 
 
@@ -141,6 +149,8 @@ class BackgroundTask:
     approval_required: bool = False
     verification_status: str = "unverified"  # unverified, verified, failed
     steering_instructions: List[str] = field(default_factory=list)
+    parent_task_id: Optional[str] = None
+    child_task_ids: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
@@ -161,6 +171,8 @@ class BackgroundTask:
             "approval_required": self.approval_required,
             "verification_status": self.verification_status,
             "steering_instructions": self.steering_instructions,
+            "parent_task_id": self.parent_task_id,
+            "child_task_ids": self.child_task_ids,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -195,6 +207,8 @@ class BackgroundTask:
             approval_required=bool(data.get("approval_required", False)),
             verification_status=data.get("verification_status", "unverified"),
             steering_instructions=data.get("steering_instructions") or [],
+            parent_task_id=data.get("parent_task_id"),
+            child_task_ids=data.get("child_task_ids") or [],
             created_at=data.get("created_at", time.time()),
             updated_at=data.get("updated_at", time.time()),
             completed_at=data.get("completed_at"),

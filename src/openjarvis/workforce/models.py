@@ -93,6 +93,7 @@ class AgentReport:
     agent_id: str
     task_id: str
     step_id: Optional[str] = None
+    parent_task_id: Optional[str] = None
     work_performed: str = ""
     findings: List[Dict[str, Any]] = field(default_factory=list)
     evidence: List[Dict[str, Any]] = field(default_factory=list)

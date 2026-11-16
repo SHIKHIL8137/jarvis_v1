@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -20,7 +21,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, List
+from typing import Any, Iterable, Iterator, List, Optional, Tuple
 
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.registry import FactStoreRegistry
@@ -152,6 +153,7 @@ class Fact:
     confidence: float = 1.0
     pinned: bool = False
     last_used_at: float = 0.0
+    expires_at: Optional[float] = None
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -160,13 +162,23 @@ class Fact:
             self.id = uuid.uuid4().hex[:12]
 
     @property
+    def is_expired(self) -> bool:
+        """Whether this fact has passed its expiration timestamp."""
+        if self.expires_at is None or self.expires_at <= 0:
+            return False
+        return time.time() >= self.expires_at
+
+    @property
     def trusted_for_recall(self) -> bool:
         """Whether this fact may be placed in model-facing context.
 
         Only ``untrusted`` — the tier the memory service assigns when the
-        injection scanner flags a fact's own text — is withheld. Unknown
-        future tiers fail closed rather than silently becoming prompt input.
+        injection scanner flags a fact's own text — is withheld. Expired
+        facts are also withheld from recall. Unknown future tiers fail
+        closed rather than silently becoming prompt input.
         """
+        if self.is_expired:
+            return False
         return (self.trust or "").strip().lower() in _RECALLABLE_TIERS
 
 
@@ -296,6 +308,11 @@ class LocalFactStore(FactStore):
                     confidence=float(obj.get("confidence", 1.0) or 1.0),
                     pinned=bool(obj.get("pinned", False)),
                     last_used_at=float(obj.get("last_used_at", 0.0) or 0.0),
+                    expires_at=(
+                        float(obj["expires_at"])
+                        if obj.get("expires_at") is not None
+                        else None
+                    ),
                 )
             )
         return facts
@@ -317,7 +334,17 @@ class LocalFactStore(FactStore):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as tmp_f:
                 tmp_f.write(payload)
-            os.replace(tmp_name, self._path)
+            # On Windows, os.replace can raise transient PermissionError if destination
+            # was just closed or is momentarily held by another handle.
+            for attempt in range(15):
+                try:
+                    os.replace(tmp_name, self._path)
+                    break
+                except (PermissionError, OSError) as replace_err:
+                    if sys.platform == "win32" and attempt < 14:
+                        time.sleep(0.02 * (attempt + 1))
+                        continue
+                    raise
         except BaseException:
             try:
                 os.unlink(tmp_name)
@@ -342,10 +369,20 @@ class LocalFactStore(FactStore):
         category: str = "facts",
         confidence: float = 1.0,
         pinned: bool = False,
+        expires_at: Optional[float] = None,
     ) -> bool:
         text = (text or "").strip()
         if not text:
             return False
+        # Redact credentials before persisting
+        try:
+            from openjarvis.security.credential_stripper import CredentialStripper
+
+            stripper = CredentialStripper()
+            text = stripper.strip(text)
+        except Exception:
+            pass
+
         trust = (trust or "").strip().lower()
         with self._lock, _cross_process_lock(self._lock_path()):
             self._sync_from_disk_locked()
@@ -371,6 +408,7 @@ class LocalFactStore(FactStore):
                     category=category,
                     confidence=confidence,
                     pinned=pinned,
+                    expires_at=expires_at,
                 )
             )
             # Enforce the cap by evicting the oldest entries. max_facts is
@@ -387,10 +425,13 @@ class LocalFactStore(FactStore):
         category: Optional[str] = None,
         query: Optional[str] = None,
         limit: int = 100,
+        include_expired: bool = False,
     ) -> List[Fact]:
         with self._lock, _cross_process_lock(self._lock_path()):
             self._sync_from_disk_locked()
             results = list(self._facts)
+            if not include_expired:
+                results = [f for f in results if not f.is_expired]
             if category:
                 results = [f for f in results if f.category == category]
             if query:
@@ -399,12 +440,63 @@ class LocalFactStore(FactStore):
             results.sort(key=lambda f: (not f.pinned, -f.created_at))
             return results[:limit]
 
+    def search_relevant(
+        self,
+        query: str,
+        limit: int = 10,
+        min_score: float = 0.0,
+        category: Optional[str] = None,
+        include_expired: bool = False,
+    ) -> List[Tuple[Fact, float]]:
+        """Search and rank facts by relevance to *query*.
+
+        Returns a list of (Fact, score) pairs sorted by relevance.
+        Expired and untrusted facts are excluded.
+        """
+        with self._lock, _cross_process_lock(self._lock_path()):
+            self._sync_from_disk_locked()
+            candidates = [
+                f
+                for f in self._facts
+                if f.trusted_for_recall and (include_expired or not f.is_expired)
+            ]
+            if category:
+                candidates = [f for f in candidates if f.category == category]
+
+            if not query or not query.strip():
+                # Default to recency when no query is provided
+                return [(f, 1.0) for f in candidates[:limit]]
+
+            q_tokens = set(re.findall(r"\w+", query.lower()))
+            if not q_tokens:
+                return [(f, 1.0) for f in candidates[:limit]]
+
+            scored: List[Tuple[Fact, float]] = []
+            for fact in candidates:
+                f_tokens = set(re.findall(r"\w+", fact.text.lower()))
+                if not f_tokens:
+                    continue
+                overlap = q_tokens & f_tokens
+                score = len(overlap) / len(q_tokens) if q_tokens else 0.0
+                if fact.pinned:
+                    score += 0.5  # boost pinned facts
+                if score >= min_score:
+                    scored.append((fact, score))
+
+            scored.sort(
+                key=lambda x: (x[0].pinned, x[1], x[0].confidence, x[0].created_at),
+                reverse=True,
+            )
+            return scored[:limit]
+
     def update_fact(
         self,
         fact_id: str,
         text: Optional[str] = None,
         category: Optional[str] = None,
         pinned: Optional[bool] = None,
+        confidence: Optional[float] = None,
+        expires_at: Optional[float] = None,
     ) -> bool:
         with self._lock, _cross_process_lock(self._lock_path()):
             self._sync_from_disk_locked()
@@ -412,11 +504,24 @@ class LocalFactStore(FactStore):
             if not target:
                 return False
             if text is not None:
-                target.text = text.strip()
+                stripped_text = text.strip()
+                try:
+                    from openjarvis.security.credential_stripper import (
+                        CredentialStripper,
+                    )
+
+                    stripped_text = CredentialStripper().strip(stripped_text)
+                except Exception:
+                    pass
+                target.text = stripped_text
             if category is not None:
                 target.category = category.strip()
             if pinned is not None:
                 target.pinned = pinned
+            if confidence is not None:
+                target.confidence = float(confidence)
+            if expires_at is not None:
+                target.expires_at = float(expires_at)
             self._flush()
             return True
 

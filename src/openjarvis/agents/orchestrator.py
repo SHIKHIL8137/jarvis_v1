@@ -16,6 +16,8 @@ import concurrent.futures
 import json
 import logging
 import re
+import threading
+import time
 from typing import Any, Callable, List, Optional
 
 from openjarvis.agents._stubs import AgentContext, AgentResult, ToolUsingAgent
@@ -69,6 +71,13 @@ class OrchestratorAgent(ToolUsingAgent):
         agent_id: Optional[str] = None,
         rate_limiter: Optional[Any] = None,
         before_tool_call: Optional[Callable[[str, dict[str, Any]], bool]] = None,
+        loop_guard_config: Optional[Any] = None,
+        strict_validation: bool = False,
+        cancellation_token: Optional[threading.Event] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
+        max_wall_time_seconds: Optional[float] = None,
+        max_tool_calls: Optional[int] = None,
+        max_output_chars: int = 32_000,
     ) -> None:
         super().__init__(
             engine,
@@ -78,12 +87,19 @@ class OrchestratorAgent(ToolUsingAgent):
             max_turns=max_turns,
             temperature=temperature,
             max_tokens=max_tokens,
+            loop_guard_config=loop_guard_config,
             interactive=interactive,
             confirm_callback=confirm_callback,
             prompt_builder=prompt_builder,
             capability_policy=capability_policy,
             agent_id=agent_id,
             rate_limiter=rate_limiter,
+            strict_validation=strict_validation,
+            cancellation_token=cancellation_token,
+            is_cancelled=is_cancelled,
+            max_wall_time_seconds=max_wall_time_seconds,
+            max_tool_calls=max_tool_calls,
+            max_output_chars=max_output_chars,
         )
         self._mode = mode
         self._system_prompt = system_prompt
@@ -167,8 +183,31 @@ class OrchestratorAgent(ToolUsingAgent):
 
         all_tool_results: list[ToolResult] = []
         turns = 0
+        start_time = time.time()
+        total_tool_calls = 0
 
         for _turn in range(self._max_turns):
+            if self.is_cancelled():
+                self._emit_turn_end(turns=turns, cancelled=True)
+                return AgentResult(
+                    content=self.truncate_output("Execution was cancelled."),
+                    tool_results=all_tool_results,
+                    turns=turns,
+                    metadata={"cancelled": True},
+                )
+
+            if (
+                self._max_wall_time_seconds is not None
+                and (time.time() - start_time) > self._max_wall_time_seconds
+            ):
+                self._emit_turn_end(turns=turns, timed_out=True)
+                return AgentResult(
+                    content=self.truncate_output("Execution timed out (maximum wall time exceeded)."),
+                    tool_results=all_tool_results,
+                    turns=turns,
+                    metadata={"timed_out": True},
+                )
+
             turns += 1
 
             if self._loop_guard:
@@ -183,13 +222,42 @@ class OrchestratorAgent(ToolUsingAgent):
             if parsed["final_answer"]:
                 self._emit_turn_end(turns=turns)
                 return AgentResult(
-                    content=parsed["final_answer"],
+                    content=self.truncate_output(parsed["final_answer"]),
                     tool_results=all_tool_results,
                     turns=turns,
                 )
 
             # TOOL -> execute
             if parsed["tool"]:
+                if self.is_cancelled():
+                    self._emit_turn_end(turns=turns, cancelled=True)
+                    return AgentResult(
+                        content=self.truncate_output("Execution was cancelled."),
+                        tool_results=all_tool_results,
+                        turns=turns,
+                        metadata={"cancelled": True},
+                    )
+
+                if (
+                    self._max_tool_calls is not None
+                    and total_tool_calls >= self._max_tool_calls
+                ):
+                    tool_result = ToolResult(
+                        tool_name=parsed["tool"],
+                        content=f"Tool call budget exceeded (limit {self._max_tool_calls}).",
+                        success=False,
+                    )
+                    all_tool_results.append(tool_result)
+                    self._emit_turn_end(turns=turns, tool_budget_exceeded=True)
+                    return AgentResult(
+                        content=self.truncate_output(
+                            f"Execution stopped: maximum tool calls limit ({self._max_tool_calls}) reached."
+                        ),
+                        tool_results=all_tool_results,
+                        turns=turns,
+                        metadata={"tool_budget_exceeded": True},
+                    )
+
                 messages.append(Message(role=Role.ASSISTANT, content=content))
 
                 tool_call = ToolCall(
@@ -200,6 +268,7 @@ class OrchestratorAgent(ToolUsingAgent):
                         parsed["input"],
                     ),
                 )
+                total_tool_calls += 1
                 denial = self._check_tool_allowed(tool_call)
                 if denial is not None:
                     tool_result = denial
@@ -220,13 +289,15 @@ class OrchestratorAgent(ToolUsingAgent):
             # Neither -> treat content as final answer
             self._emit_turn_end(turns=turns)
             return AgentResult(
-                content=content,
+                content=self.truncate_output(content),
                 tool_results=all_tool_results,
                 turns=turns,
             )
 
         # Max turns exceeded
-        return self._max_turns_result(all_tool_results, turns)
+        max_turn_res = self._max_turns_result(all_tool_results, turns)
+        max_turn_res.content = self.truncate_output(max_turn_res.content)
+        return max_turn_res
 
     def _normalize_structured_tool_input(
         self,
@@ -364,8 +435,31 @@ class OrchestratorAgent(ToolUsingAgent):
         turns = 0
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        start_time = time.time()
+        total_tool_calls = 0
 
         for _turn in range(self._max_turns):
+            if self.is_cancelled():
+                self._emit_turn_end(turns=turns, cancelled=True)
+                return AgentResult(
+                    content=self.truncate_output("Execution was cancelled."),
+                    tool_results=all_tool_results,
+                    turns=turns,
+                    metadata={"cancelled": True},
+                )
+
+            if (
+                self._max_wall_time_seconds is not None
+                and (time.time() - start_time) > self._max_wall_time_seconds
+            ):
+                self._emit_turn_end(turns=turns, timed_out=True)
+                return AgentResult(
+                    content=self.truncate_output("Execution timed out (maximum wall time exceeded)."),
+                    tool_results=all_tool_results,
+                    turns=turns,
+                    metadata={"timed_out": True},
+                )
+
             turns += 1
 
             if self._loop_guard:
@@ -390,9 +484,10 @@ class OrchestratorAgent(ToolUsingAgent):
             if not raw_tool_calls:
                 content = self._check_continuation(result, messages)
                 content = self._strip_think_tags(content)
-                self._emit_turn_end(turns=turns, content_length=len(content))
+                final_content = self.truncate_output(content)
+                self._emit_turn_end(turns=turns, content_length=len(final_content))
                 return AgentResult(
-                    content=content,
+                    content=final_content,
                     tool_results=all_tool_results,
                     turns=turns,
                     metadata={
@@ -405,7 +500,7 @@ class OrchestratorAgent(ToolUsingAgent):
             # Build ToolCall objects from raw dicts
             tool_calls = [
                 ToolCall(
-                    id=tc.get("id", f"call_{i}"),
+                    id=tc.get("id") or f"call_{_turn}_{i}",
                     name=tc.get("name", ""),
                     arguments=tc.get("arguments", "{}"),
                 )
@@ -421,8 +516,47 @@ class OrchestratorAgent(ToolUsingAgent):
                 )
             )
 
+            # Check cancellation before tool execution
+            if self.is_cancelled():
+                self._emit_turn_end(turns=turns, cancelled=True)
+                return AgentResult(
+                    content=self.truncate_output("Execution was cancelled."),
+                    tool_results=all_tool_results,
+                    turns=turns,
+                    metadata={"cancelled": True},
+                )
+
             # Execute each tool (with loop guard check) and append results
             if self._parallel_tools and len(tool_calls) > 1:
+                if (
+                    self._max_tool_calls is not None
+                    and total_tool_calls >= self._max_tool_calls
+                ):
+                    for tc in tool_calls:
+                        tr = ToolResult(
+                            tool_name=tc.name,
+                            content=f"Tool call budget exceeded (limit {self._max_tool_calls}).",
+                            success=False,
+                        )
+                        all_tool_results.append(tr)
+                        messages.append(
+                            Message(
+                                role=Role.TOOL,
+                                content=tr.content,
+                                tool_call_id=tc.id,
+                                name=tc.name,
+                            )
+                        )
+                    self._emit_turn_end(turns=turns, tool_budget_exceeded=True)
+                    return AgentResult(
+                        content=self.truncate_output(
+                            f"Execution stopped: maximum tool calls limit ({self._max_tool_calls}) reached."
+                        ),
+                        tool_results=all_tool_results,
+                        turns=turns,
+                        metadata={"tool_budget_exceeded": True},
+                    )
+
                 # Governance callbacks often wrap stateful policy engines and
                 # are not assumed to be thread-safe. Evaluate them in request
                 # order before dispatching the approved tool work in parallel.
@@ -450,6 +584,7 @@ class OrchestratorAgent(ToolUsingAgent):
                     return tc, self._executor.execute(tc)
 
                 if approved_calls:
+                    total_tool_calls += len(approved_calls)
                     with concurrent.futures.ThreadPoolExecutor(
                         max_workers=len(approved_calls),
                     ) as pool:
@@ -475,6 +610,45 @@ class OrchestratorAgent(ToolUsingAgent):
             else:
                 # Sequential execution
                 for tc in tool_calls:
+                    if self.is_cancelled():
+                        self._emit_turn_end(turns=turns, cancelled=True)
+                        return AgentResult(
+                            content=self.truncate_output("Execution was cancelled."),
+                            tool_results=all_tool_results,
+                            turns=turns,
+                            metadata={"cancelled": True},
+                        )
+
+                    if (
+                        self._max_tool_calls is not None
+                        and total_tool_calls >= self._max_tool_calls
+                    ):
+                        tool_result = ToolResult(
+                            tool_name=tc.name,
+                            content=f"Tool call budget exceeded (limit {self._max_tool_calls}).",
+                            success=False,
+                        )
+                        all_tool_results.append(tool_result)
+                        messages.append(
+                            Message(
+                                role=Role.TOOL,
+                                content=tool_result.content,
+                                tool_call_id=tc.id,
+                                name=tc.name,
+                            )
+                        )
+                        self._emit_turn_end(turns=turns, tool_budget_exceeded=True)
+                        return AgentResult(
+                            content=self.truncate_output(
+                                f"Execution stopped: maximum tool calls limit ({self._max_tool_calls}) reached."
+                            ),
+                            tool_results=all_tool_results,
+                            turns=turns,
+                            metadata={"tool_budget_exceeded": True},
+                        )
+
+                    total_tool_calls += 1
+
                     # Governance hook check before execution
                     denial = self._check_tool_allowed(tc)
                     if denial is not None:
@@ -526,7 +700,7 @@ class OrchestratorAgent(ToolUsingAgent):
                     )
 
         # Max turns exceeded
-        final_content = self._strip_think_tags(content) if content else ""
+        final_content = self.truncate_output(self._strip_think_tags(content) if content else "")
         self._emit_turn_end(turns=turns, max_turns_exceeded=True)
         return AgentResult(
             content=final_content or "Maximum turns reached without a final answer.",

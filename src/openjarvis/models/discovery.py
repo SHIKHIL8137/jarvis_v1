@@ -189,6 +189,10 @@ class ModelDiscoveryEngine:
         if "lmstudio" not in self._provider_health:
             models.extend(self._probe_lmstudio_direct())
 
+        # Direct probe for NVIDIA NIM if configured
+        if "nim" not in self._provider_health:
+            models.extend(self._probe_nim_direct())
+
         return models
 
     def _probe_ollama_direct(self) -> List[ModelCapabilityInfo]:
@@ -307,6 +311,64 @@ class ModelDiscoveryEngine:
             }
         return models
 
+    def _probe_nim_direct(self) -> List[ModelCapabilityInfo]:
+        models: List[ModelCapabilityInfo] = []
+        nim_key = os.environ.get("NIM_API_KEY") or os.environ.get("NVIDIA_API_KEY")
+        nim_host = os.environ.get("NIM_HOST")
+        if not nim_key and not nim_host:
+            self._provider_health["nim"] = {
+                "provider": "nim",
+                "type": "local",
+                "status": "unconfigured",
+                "model_count": 0,
+                "latency_ms": 0.0,
+                "last_checked": time.time(),
+                "error": "NIM_API_KEY or NIM_HOST not configured",
+            }
+            return models
+
+        target_host = (nim_host or "https://integrate.api.nvidia.com").rstrip("/")
+        t0 = time.monotonic()
+        try:
+            headers = {"User-Agent": "OpenJarvis"}
+            if nim_key:
+                headers["Authorization"] = f"Bearer {nim_key}"
+            req = urllib.request.Request(f"{target_host}/v1/models", headers=headers)
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                latency_ms = round((time.monotonic() - t0) * 1000, 1)
+                raw_models = data.get("data", [])
+                self._provider_health["nim"] = {
+                    "provider": "nim",
+                    "type": "local" if nim_host else "cloud",
+                    "status": "healthy",
+                    "model_count": len(raw_models),
+                    "latency_ms": latency_ms,
+                    "last_checked": time.time(),
+                    "error": None,
+                }
+                for m in raw_models:
+                    m_id = m.get("id", "")
+                    if m_id:
+                        cap = self._analyze_model_capability(
+                            m_id,
+                            "nim",
+                            is_local=bool(nim_host),
+                            latency_ms=latency_ms,
+                        )
+                        models.append(cap)
+        except Exception as exc:
+            self._provider_health["nim"] = {
+                "provider": "nim",
+                "type": "local" if nim_host else "cloud",
+                "status": "offline",
+                "model_count": 0,
+                "latency_ms": 0.0,
+                "last_checked": time.time(),
+                "error": self._sanitize_error_message(str(exc)),
+            }
+        return models
+
     # --- Cloud Provider Probes ---
 
     def _probe_cloud_engines(self) -> List[ModelCapabilityInfo]:
@@ -341,21 +403,25 @@ class ModelDiscoveryEngine:
                 env_key = os.environ.get(env_key_map.get(prov, ""))
 
                 if client is None and not env_key:
-                    self._provider_health[prov] = {
-                        "provider": prov,
-                        "type": "cloud",
-                        "status": "unconfigured",
-                        "connected": False,
-                        "model_count": 0,
-                        "latency_ms": 0.0,
-                        "last_checked": time.time(),
-                        "error": "API key not configured",
-                    }
-                    continue
+                    if prov == "openrouter":
+                        # OpenRouter models endpoint is publicly accessible without API key to discover free models
+                        api_key = ""
+                    else:
+                        self._provider_health[prov] = {
+                            "provider": prov,
+                            "type": "cloud",
+                            "status": "unconfigured",
+                            "connected": False,
+                            "model_count": 0,
+                            "latency_ms": 0.0,
+                            "last_checked": time.time(),
+                            "error": "API key not configured",
+                        }
+                        continue
 
                 # Live query provider model list API and measure real latency
                 t0 = time.monotonic()
-                prov_models: List[str] = []
+                prov_models: List[Any] = []
                 try:
                     api_key = env_key or getattr(client, "api_key", "")
 
@@ -366,13 +432,14 @@ class ModelDiscoveryEngine:
                         for item in data_items:
                             m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
                             if m_id:
-                                prov_models.append(m_id)
+                                raw_meta = item if isinstance(item, dict) else {}
+                                prov_models.append((m_id, raw_meta))
                     elif prov == "google" and hasattr(client, "models") and hasattr(client.models, "list"):
                         list_resp = client.models.list()
                         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                         for m in list_resp:
                             m_name = getattr(m, "name", str(m))
-                            prov_models.append(m_name)
+                            prov_models.append((m_name, {}))
                     elif prov == "anthropic" and client is not None and hasattr(client, "models") and hasattr(client.models, "list"):
                         list_resp = client.models.list()
                         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
@@ -380,23 +447,23 @@ class ModelDiscoveryEngine:
                         for item in data_items:
                             m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
                             if m_id:
-                                prov_models.append(m_id)
+                                prov_models.append((m_id, {}))
                     else:
                         # REST probe fallback for any provider when SDK client is not initialized or lacks models.list
                         rest_endpoints = {
-                            "openai": ("https://api.openai.com/v1/models", {"Authorization": f"Bearer {api_key}"}),
-                            "deepseek": ("https://api.deepseek.com/models", {"Authorization": f"Bearer {api_key}"}),
-                            "openrouter": ("https://openrouter.ai/api/v1/models", {"Authorization": f"Bearer {api_key}"}),
+                            "openai": ("https://api.openai.com/v1/models", {"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                            "deepseek": ("https://api.deepseek.com/models", {"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                            "openrouter": ("https://openrouter.ai/api/v1/models", {"Authorization": f"Bearer {api_key}"} if api_key else {}),
                             "anthropic": (
                                 "https://api.anthropic.com/v1/models",
                                 {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
                             ),
                             "google": (f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", {}),
-                            "atlascloud": ("https://api.atlascloud.ai/v1/models", {"Authorization": f"Bearer {api_key}"}),
-                            "minimax": ("https://api.minimax.chat/v1/models", {"Authorization": f"Bearer {api_key}"}),
+                            "atlascloud": ("https://api.atlascloud.ai/v1/models", {"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                            "minimax": ("https://api.minimax.chat/v1/models", {"Authorization": f"Bearer {api_key}"} if api_key else {}),
                         }
 
-                        if prov in rest_endpoints and api_key:
+                        if prov in rest_endpoints and (api_key or prov == "openrouter"):
                             url, headers = rest_endpoints[prov]
                             headers["User-Agent"] = "OpenJarvis"
                             req = urllib.request.Request(url, headers=headers, method="GET")
@@ -411,7 +478,8 @@ class ModelDiscoveryEngine:
                                             or (item.get("id") or item.get("name") if isinstance(item, dict) else str(item))
                                         )
                                         if m_id:
-                                            prov_models.append(m_id)
+                                            raw_meta = item if isinstance(item, dict) else {}
+                                            prov_models.append((m_id, raw_meta))
                         else:
                             elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
                             prov_models = []
@@ -439,8 +507,18 @@ class ModelDiscoveryEngine:
                             "error": "No models returned from provider API",
                         }
 
-                    for m_id in prov_models:
-                        cap = self._analyze_model_capability(m_id, prov, is_local=False, latency_ms=elapsed_ms)
+                    for m_entry in prov_models:
+                        if isinstance(m_entry, tuple):
+                            m_id, raw_meta = m_entry
+                        else:
+                            m_id, raw_meta = m_entry, {}
+                        cap = self._analyze_model_capability(
+                            m_id,
+                            prov,
+                            is_local=False,
+                            latency_ms=elapsed_ms,
+                            raw_metadata=raw_meta,
+                        )
                         models.append(cap)
 
                 except Exception as exc:
@@ -489,13 +567,28 @@ class ModelDiscoveryEngine:
                         "model_count": 0,
                         "latency_ms": elapsed_ms,
                         "last_checked": time.time(),
-                        "error": str(exc),
+                        "error": self._sanitize_error_message(str(exc)),
                     }
                     # Offline / unconfigured providers contribute zero selectable models
         except Exception as exc:
-            logger.debug("Cloud engine probe error: %s", exc)
+            logger.debug("Cloud engine probe error: %s", self._sanitize_error_message(str(exc)))
 
         return models
+
+    @staticmethod
+    def _sanitize_error_message(text: str) -> str:
+        """Scrub sensitive credentials, bearer tokens, and API keys from text/messages."""
+        if not text:
+            return ""
+        # Redact Authorization bearer tokens
+        text = re.sub(r"(Bearer\s+)[a-zA-Z0-9_\-\.]{8,}", r"\1[REDACTED]", text, flags=re.IGNORECASE)
+        # Redact sk- style keys (OpenAI, OpenRouter, DeepSeek, etc.)
+        text = re.sub(r"(sk-[a-zA-Z0-9_\-]{8,})", r"[REDACTED_KEY]", text)
+        # Redact key= query parameters (Gemini, etc.)
+        text = re.sub(r"([?&]key=)[^&\s]+", r"\1[REDACTED_KEY]", text, flags=re.IGNORECASE)
+        # Redact nvapi- (NVIDIA keys)
+        text = re.sub(r"(nvapi-[a-zA-Z0-9_\-]{8,})", r"[REDACTED_NVIDIA_KEY]", text, flags=re.IGNORECASE)
+        return text
 
     # --- Capability Heuristic & Metadata Analysis ---
 
@@ -505,6 +598,7 @@ class ModelDiscoveryEngine:
         provider: str,
         is_local: bool,
         latency_ms: float = 0.0,
+        raw_metadata: Optional[Dict[str, Any]] = None,
     ) -> ModelCapabilityInfo:
         m_lower = model_id.lower()
         param_size = self._parse_param_size(model_id)
@@ -565,21 +659,49 @@ class ModelDiscoveryEngine:
         else:
             provenance["vision"] = CapabilityProvenance.UNKNOWN.value
 
-        # Context length heuristics
+        # Context length: prefer provider declared metadata if available
         ctx = 8192
-        if "128k" in m_lower or "claude" in m_lower or "gpt-4o" in m_lower:
+        if raw_metadata and isinstance(raw_metadata, dict) and raw_metadata.get("context_length"):
+            try:
+                ctx = int(raw_metadata["context_length"])
+            except (ValueError, TypeError):
+                ctx = 8192
+        elif "128k" in m_lower or "claude" in m_lower or "gpt-4o" in m_lower:
             ctx = 128000
         elif "32k" in m_lower or "qwen" in m_lower:
             ctx = 32768
         elif "16k" in m_lower:
             ctx = 16384
 
+        # Strict pricing metadata inspection for free models (OpenRouter metadata verification)
+        is_free_by_metadata = False
+        if raw_metadata and isinstance(raw_metadata, dict):
+            pricing = raw_metadata.get("pricing")
+            if isinstance(pricing, dict):
+                p_cost = str(pricing.get("prompt", "1")).strip()
+                c_cost = str(pricing.get("completion", "1")).strip()
+                try:
+                    if float(p_cost) == 0.0 and float(c_cost) == 0.0:
+                        is_free_by_metadata = True
+                except (ValueError, TypeError):
+                    pass
+
+        is_free = (
+            is_local
+            or provider in ("ollama", "lmstudio")
+            or is_free_by_metadata
+            or ":free" in m_lower
+            or "/free" in m_lower
+            or m_lower.endswith("-free")
+            or (provider == "nim" and "free" in m_lower)
+        )
+
         return ModelCapabilityInfo(
             model_id=model_id,
             provider=provider,
             display_name=model_id.split("/")[-1],
             is_local=is_local,
-            is_free=is_local,
+            is_free=is_free,
             context_length=ctx,
             supports_tools=supports_tools,
             supports_structured_output=True,

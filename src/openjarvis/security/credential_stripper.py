@@ -5,11 +5,14 @@ from typing import List, Tuple
 
 _CREDENTIAL_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     ("api_key", re.compile(r"sk-[a-zA-Z0-9_-]{20,}")),
+    ("nim_key", re.compile(r"nvapi-[a-zA-Z0-9_\-.]{20,}")),
+    ("anthropic_key", re.compile(r"sk-ant-[a-zA-Z0-9_\-.]{20,}")),
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("github_token", re.compile(r"ghp_[a-zA-Z0-9]{36}")),
     ("github_token", re.compile(r"gho_[a-zA-Z0-9]{36}")),
     ("slack_token", re.compile(r"xoxb-[0-9A-Za-z\-]+")),
     ("bearer_token", re.compile(r"Bearer\s+[a-zA-Z0-9_\-.]{20,}")),
+    ("password_assignment", re.compile(r"(?i)\b(password|secret|api_key|access_token)\s*[:=]\s*['\"][^\s'\"]{6,}['\"]")),
 ]
 
 

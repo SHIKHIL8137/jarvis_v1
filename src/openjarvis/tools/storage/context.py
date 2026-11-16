@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, List, Optional, Sequence
@@ -23,6 +24,8 @@ class ContextConfig:
     top_k: int = 5
     min_score: float = 0.0
     max_context_tokens: int = 2048
+    filter_relevant_facts: bool = False
+    min_fact_score: float = 0.0
 
 
 def _count_tokens(text: str) -> int:
@@ -189,9 +192,29 @@ def inject_context(
     fact_budget = cfg.max_context_tokens
     if results:
         fact_budget //= 2
+
+    # Candidates: exclude untrusted and expired facts
+    fact_candidates = list(_trusted_facts(facts))
+    if cfg.filter_relevant_facts and query and query.strip():
+        q_tokens = set(re.findall(r"\w+", query.lower()))
+        if q_tokens:
+            def _calc_score(f: Fact) -> float:
+                if f.pinned:
+                    return 1.0
+                f_tokens = set(re.findall(r"\w+", f.text.lower()))
+                return len(q_tokens & f_tokens) / len(q_tokens) if f_tokens else 0.0
+
+            scored = [(f, _calc_score(f)) for f in fact_candidates]
+            # Exclude facts that don't meet minimum relevance threshold
+            fact_candidates = [f for f, s in scored if s > cfg.min_fact_score]
+            score_dict = {f.id: s for f, s in scored}
+            fact_candidates.sort(
+                key=lambda f: (f.pinned, score_dict.get(f.id, 0.0), f.created_at)
+            )
+
     selected_facts: List[Fact] = []
     total_tokens = 0
-    for fact in reversed(_trusted_facts(facts)):
+    for fact in reversed(fact_candidates):
         tokens = _count_tokens(fact.text)
         if total_tokens + tokens > fact_budget:
             continue

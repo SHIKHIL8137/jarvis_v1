@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import tempfile
 
 from openjarvis.core import get_python_executable
@@ -73,22 +74,28 @@ class TestRunSandboxed:
         assert not result.killed
 
     def test_timeout_kills_process(self) -> None:
-        result = run_sandboxed("sleep 60", timeout=1.0)
+        if sys.platform != "win32":
+            cmd = "sleep 60"
+        else:
+            cmd = f'"{get_python_executable()}" -c "import time; time.sleep(60)"'
+        result = run_sandboxed(cmd, timeout=1.0)
         assert result.timed_out
         assert result.killed
         assert result.returncode == -1
 
     def test_working_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = run_sandboxed("pwd", working_dir=tmpdir, timeout=10.0)
+            cmd = "pwd" if sys.platform != "win32" else "cd"
+            result = run_sandboxed(cmd, working_dir=tmpdir, timeout=10.0)
             assert result.returncode == 0
-            assert tmpdir in result.stdout.strip()
+            assert tmpdir.lower() in result.stdout.strip().lower()
 
     def test_env_isolation(self) -> None:
         os.environ["TEST_SECRET"] = "super_secret_value"
         try:
+            cmd = 'echo "val=$TEST_SECRET"' if sys.platform != "win32" else "echo val=%TEST_SECRET%"
             result = run_sandboxed(
-                'echo "val=$TEST_SECRET"',
+                cmd,
                 timeout=10.0,
             )
             assert result.returncode == 0
@@ -98,8 +105,15 @@ class TestRunSandboxed:
 
     def test_output_truncation(self) -> None:
         # Generate output larger than max_output_bytes
+        if sys.platform != "win32":
+            cmd = f"{shlex.quote(get_python_executable())} -c \"print('A' * 200)\""
+        else:
+            py_exe = get_python_executable()
+            if " " in py_exe:
+                py_exe = f'"{py_exe}"'
+            cmd = f"{py_exe} -c print('A'*200)"
         result = run_sandboxed(
-            f"{shlex.quote(get_python_executable())} -c \"print('A' * 200)\"",
+            cmd,
             timeout=10.0,
             max_output_bytes=50,
         )

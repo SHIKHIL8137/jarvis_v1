@@ -84,6 +84,14 @@ class TaskStore:
                     created_at              REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS task_leases (
+                    task_id                 TEXT PRIMARY KEY,
+                    worker_id               TEXT NOT NULL,
+                    acquired_at             REAL NOT NULL,
+                    expires_at              REAL NOT NULL,
+                    heartbeat_at            REAL NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_tasks_status ON background_tasks(status);
                 CREATE INDEX IF NOT EXISTS idx_checkpoints_task ON task_checkpoints(task_id);
                 CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id);
@@ -316,3 +324,97 @@ class TaskStore:
                 "error": row["error"],
             }
         )
+
+    # --- Worker Leases & Stale Recovery --------------------------------------
+
+    def acquire_lease(
+        self, task_id: str, worker_id: str, ttl_seconds: float = 30.0
+    ) -> bool:
+        """Acquire an exclusive lease for a worker to execute the task."""
+        with self._lock:
+            now = time.time()
+            cur = self._conn.execute(
+                "SELECT worker_id, expires_at FROM task_leases WHERE task_id = ?",
+                (task_id,),
+            )
+            row = cur.fetchone()
+            if row and row["expires_at"] > now and row["worker_id"] != worker_id:
+                return False  # Active lease held by another worker
+
+            self._conn.execute(
+                """
+                INSERT INTO task_leases (task_id, worker_id, acquired_at, expires_at, heartbeat_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    worker_id=excluded.worker_id,
+                    acquired_at=excluded.acquired_at,
+                    expires_at=excluded.expires_at,
+                    heartbeat_at=excluded.heartbeat_at
+                """,
+                (task_id, worker_id, now, now + ttl_seconds, now),
+            )
+            self._conn.commit()
+            return True
+
+    def renew_lease(
+        self, task_id: str, worker_id: str, ttl_seconds: float = 30.0
+    ) -> bool:
+        """Renew active lease and record worker heartbeat."""
+        with self._lock:
+            now = time.time()
+            cur = self._conn.execute(
+                "SELECT worker_id FROM task_leases WHERE task_id = ?", (task_id,)
+            )
+            row = cur.fetchone()
+            if not row or row["worker_id"] != worker_id:
+                return False
+
+            self._conn.execute(
+                "UPDATE task_leases SET expires_at = ?, heartbeat_at = ? WHERE task_id = ? AND worker_id = ?",
+                (now + ttl_seconds, now, task_id, worker_id),
+            )
+            self._conn.commit()
+            return True
+
+    def release_lease(
+        self, task_id: str, worker_id: Optional[str] = None
+    ) -> None:
+        """Release lease upon task completion, pause, or worker exit."""
+        with self._lock:
+            if worker_id:
+                self._conn.execute(
+                    "DELETE FROM task_leases WHERE task_id = ? AND worker_id = ?",
+                    (task_id, worker_id),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM task_leases WHERE task_id = ?", (task_id,)
+                )
+            self._conn.commit()
+
+    def get_lease(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch active lease details for a task."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT task_id, worker_id, acquired_at, expires_at, heartbeat_at FROM task_leases WHERE task_id = ?",
+                (task_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_stale_tasks(
+        self, heartbeat_timeout_seconds: float = 60.0
+    ) -> List[BackgroundTask]:
+        """Find running tasks whose worker heartbeat has expired."""
+        with self._lock:
+            now = time.time()
+            threshold = now - heartbeat_timeout_seconds
+            cur = self._conn.execute(
+                """
+                SELECT t.* FROM background_tasks t
+                JOIN task_leases l ON t.id = l.task_id
+                WHERE t.status = 'running' AND l.heartbeat_at < ?
+                """,
+                (threshold,),
+            )
+            return [self._row_to_task(r) for r in cur.fetchall()]

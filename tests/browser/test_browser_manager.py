@@ -1,6 +1,6 @@
 """Unit and integration tests for DesktopBrowserManager and 6-step decision pipeline."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openjarvis.browser.manager import DesktopBrowserManager
@@ -98,7 +98,7 @@ def test_duplicate_tab_prevention_on_repeated_requests(manager):
     tabs = [existing_tab]
 
     with patch.object(manager, "list_tabs", return_value=tabs), \
-         patch.object(manager, "activate_tab", return_value=True) as mock_activate:
+         patch.object(manager, "activate_tab_async", new_callable=AsyncMock, return_value=True) as mock_activate:
 
         # 1st call
         res1 = manager.open_or_reuse("https://www.linkedin.com")

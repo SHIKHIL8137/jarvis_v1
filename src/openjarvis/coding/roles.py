@@ -62,7 +62,7 @@ Diffs alone are not enough: read the whole modified files and nearby code, and c
 Look for: bugs (logic errors, off-by-one, missing guards, edge cases, security issues, swallowed errors), fit with existing patterns, performance only if clearly bad, and unintended behavior changes.
 Be certain before calling something a bug; name the realistic scenario that breaks it and an honest severity. Only review what changed. No flattery, no style nitpicks. If unsure, say "I'm not sure about X" instead of flagging."""
 
-_READ = ["file_read", "grep", "glob", "git_status", "git_diff", "git_log", "web_search"]
+_READ = ["file_read", "grep", "glob", "git_status", "git_diff", "git_log", "web_search", "project_summary"]
 _WRITE = ["edit", "file_write", "apply_patch", "shell_exec", "git_commit", "todo_write", "code_interpreter"]
 
 
