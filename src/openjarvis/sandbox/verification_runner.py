@@ -75,9 +75,9 @@ def is_link_or_reparse(path: Path | str) -> bool:
             return True
         if hasattr(os.path, "isjunction") and os.path.isjunction(str(p)):
             return True
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
         return False
-    except (PermissionError, RuntimeError, OSError):
+    except (PermissionError, RuntimeError, OSError, ValueError):
         # A path whose link status cannot be safely inspected must fail closed
         raise
     return False
@@ -375,29 +375,50 @@ class IsolatedVerificationRunner:
             return Path(workspace_root).resolve()
 
         system_boundaries: Set[Path] = set()
+        temp_ok = False
+        home_ok = False
         try:
-            system_boundaries.add(Path(tempfile.gettempdir()).resolve())
-        except Exception:
-            pass
+            temp_path = Path(tempfile.gettempdir())
+            system_boundaries.add(temp_path.resolve())
+            system_boundaries.add(temp_path)
+            temp_ok = True
+        except (OSError, RuntimeError, ValueError) as err:
+            logger.warning("Failed to establish system temp directory boundary: %s", err)
+
         try:
-            system_boundaries.add(Path.home().resolve())
-        except Exception:
-            pass
+            home_path = Path.home()
+            system_boundaries.add(home_path.resolve())
+            system_boundaries.add(home_path)
+            home_ok = True
+        except (OSError, RuntimeError, KeyError, ValueError) as err:
+            logger.warning("Failed to establish user home directory boundary: %s", err)
+
+        # If system boundaries cannot be established, fail closed to resolved_cwd
+        if not (temp_ok or home_ok):
+            logger.warning("System boundaries cannot be safely determined; confining workspace root to cwd '%s'", resolved_cwd)
+            return resolved_cwd
 
         highest_marker_dir: Optional[Path] = None
         curr = resolved_cwd
         while True:
-            # Check for project markers in curr
-            if any((curr / marker).exists() for marker in PROJECT_ROOT_MARKERS):
-                highest_marker_dir = curr
+            # Check for project markers in curr; stop climbing if directory cannot be safely inspected
+            try:
+                if any((curr / marker).exists() for marker in PROJECT_ROOT_MARKERS):
+                    highest_marker_dir = curr
+            except (OSError, PermissionError):
+                break
 
             # Boundary checks: do not climb above system boundaries or filesystem root
             if curr in system_boundaries or curr == curr.parent:
                 break
 
             # If allowed_dirs is configured, do not climb outside allowed_dirs
-            if allowed_dirs and not any(is_path_within_allowed(curr.parent, allowed_dirs) for _ in [1]):
-                break
+            if allowed_dirs:
+                try:
+                    if not is_path_within_allowed(curr.parent, allowed_dirs):
+                        break
+                except (OSError, RuntimeError):
+                    break
 
             curr = curr.parent
 
@@ -495,8 +516,8 @@ class IsolatedVerificationRunner:
                         cand_root = Path(decoded_part if re.match(r"^[a-zA-Z]:[/\\]", decoded_part) else f"{decoded_part}\\").resolve()
                         if not is_path_within_workspace_root(cand_root, ws_root, extra_authorized_roots):
                             return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
-                    except Exception:
-                        return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
+                    except Exception as drv_err:
+                        return f"Security boundary violation: drive-root escape prohibited in argument '{tok}': {drv_err}"
 
                 # Windows absolute path on POSIX or resolving outside workspace on Windows
                 if re.match(r"^[a-zA-Z]:[/\\]", part) or re.match(r"^[a-zA-Z]:[/\\]", decoded_part):
@@ -507,8 +528,8 @@ class IsolatedVerificationRunner:
                             cand_p = Path(decoded_part).resolve(strict=False)
                             if not is_path_within_workspace_root(cand_p, ws_root, extra_authorized_roots):
                                 return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
-                        except Exception:
-                            return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
+                        except Exception as win_err:
+                            return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape: {win_err}"
 
                 # Symlink and Windows junction/reparse point check
                 cand_path = Path(decoded_part)
@@ -564,8 +585,8 @@ class IsolatedVerificationRunner:
                     candidate_exists = (resolved_cwd / decoded_part).exists() or is_link_or_reparse(resolved_cwd / decoded_part)
                 except (PermissionError, RuntimeError, OSError) as acc_err:
                     return f"Security boundary violation: argument '{tok}' cannot be safely inspected: {acc_err}"
-                except Exception:
-                    candidate_exists = False
+                except Exception as insp_err:
+                    return f"Security boundary violation: argument '{tok}' path inspection failed: {insp_err}"
 
                 is_path_like = (
                     any(part.startswith(p) for p in ("/", "\\", "."))

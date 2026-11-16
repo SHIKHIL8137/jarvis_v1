@@ -985,5 +985,38 @@ def test_oserror_path_resolution_fails_closed(tmp_path):
         assert len(calls) == 0
 
 
+def test_candidate_inspection_failure_fails_closed(tmp_path):
+    """Inspection failure during candidate existence check must fail closed with BLOCKED status and zero execution."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    with patch("openjarvis.sandbox.verification_runner.is_link_or_reparse", side_effect=OSError("Disk read error on path inspection")), \
+         record_verification_executions() as calls:
+        res = runner.execute_verification_command("python test_script.py", cwd=str(ws))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert "cannot be safely" in res["output"] or "path inspection failed" in res["output"]
+        assert len(calls) == 0
+
+
+def test_system_boundary_discovery_failure_confines_to_cwd(tmp_path):
+    """Failure to discover system boundaries in determine_workspace_root() confines workspace to resolved_cwd."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "subdir" / "project"
+    ws.mkdir(parents=True)
+
+    # Place a project marker in parent directory (subdir)
+    marker = ws.parent / "pyproject.toml"
+    marker.write_text("[project]\nname='test'")
+
+    with patch("tempfile.gettempdir", side_effect=OSError("Cannot access tempdir")), \
+         patch.object(Path, "home", side_effect=RuntimeError("Cannot access home")):
+        determined_root = runner.determine_workspace_root(ws)
+        # Must fail closed: not climb to parent directory despite project marker, confined strictly to ws
+        assert determined_root.resolve() == ws.resolve()
+
+
+
 
 

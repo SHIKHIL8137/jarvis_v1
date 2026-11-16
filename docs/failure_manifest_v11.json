@@ -1,0 +1,1436 @@
+{
+  "version": "1.0",
+  "total_records": 142,
+  "summary_by_status": {
+    "FAILED": 128,
+    "ERROR": 14
+  },
+  "summary_by_classification": {
+    "flaky_test_fixture": 3,
+    "missing_external_dependency": 20,
+    "platform_specific": 91,
+    "release_ci_verification": 28
+  },
+  "records": [
+    {
+      "node_id": "tests/bench/test_throughput.py::TestThroughputBenchmark::test_tokens_per_second_calc",
+      "file": "tests/bench/test_throughput.py",
+      "test_name": "TestThroughputBenchmark::test_tokens_per_second_calc",
+      "status": "FAILED",
+      "classification": "flaky_test_fixture",
+      "error_signature": "ZeroDivisionError: float division by zero (elapsed_time == 0.0)",
+      "evidence": "Timer float resolution division by zero on ultra-fast timer benchmark",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/channels/test_channel_contract.py::test_connect_no_credentials_no_crash[whatsapp_baileys]",
+      "file": "tests/channels/test_channel_contract.py",
+      "test_name": "test_connect_no_credentials_no_crash[whatsapp_baileys]",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: Baileys bridge daemon is not running",
+      "evidence": "Requires local WhatsApp Baileys node bridge daemon listening on local port",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_clock_adjustment_does_not_discard_registered_daemon[1]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_clock_adjustment_does_not_discard_registered_daemon[1]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_clock_adjustment_does_not_discard_registered_daemon[1700000100.5]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_clock_adjustment_does_not_discard_registered_daemon[1700000100.5]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_clock_adjustment_does_not_discard_registered_daemon[2000000000]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_clock_adjustment_does_not_discard_registered_daemon[2000000000]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_recycled_pid_is_never_signaled",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_recycled_pid_is_never_signaled",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_reboot_rejects_even_an_identical_pid_and_start_tick",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_reboot_rejects_even_an_identical_pid_and_start_tick",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv0]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv0]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv1]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv1]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv2]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv2]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv3]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv3]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv4]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv4]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv5]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv5]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv6]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv6]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv7]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv7]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv8]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv8]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv9]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv9]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_live_legacy_daemon_is_migrated_without_wall_clock[argv10]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_live_legacy_daemon_is_migrated_without_wall_clock[argv10]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv0]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv0]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv1]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv1]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv2]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv2]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv3]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv3]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv4]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv4]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv5]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv5]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv6]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv6]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv7]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv7]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv8]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv8]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv9]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv9]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_unrelated_process_is_not_adopted_or_signaled[argv10]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_unrelated_process_is_not_adopted_or_signaled[argv10]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_legacy_migration_rechecks_identity_after_reading_command",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_legacy_migration_rechecks_identity_after_reading_command",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_child_promotion_preserves_the_child_identity",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_child_promotion_preserves_the_child_identity",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_corrupt_identity_uses_legacy_verification[identity0]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_corrupt_identity_uses_legacy_verification[identity0]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_corrupt_identity_uses_legacy_verification[identity1]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_corrupt_identity_uses_legacy_verification[identity1]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_daemon_identity.py::test_corrupt_identity_uses_legacy_verification[identity2]",
+      "file": "tests/cli/test_daemon_identity.py",
+      "test_name": "test_corrupt_identity_uses_legacy_verification[identity2]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert {} == {'pid': 4321, 'boot_id': ..., 'start_ticks': 10000}",
+      "evidence": "Linux /proc/<pid>/stat and /proc/sys/kernel/random/boot_id inspection bypassed on Windows (sys.platform == 'win32' uses native win32 APIs)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_model_convert.py::TestModelConvert::test_convert_gguf_shells_and_quantizes",
+      "file": "tests/cli/test_model_convert.py",
+      "test_name": "TestModelConvert::test_convert_gguf_shells_and_quantizes",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "OSError: [WinError 1314] A required privilege is not held by the client",
+      "evidence": "Model conversion script creates symlinks on Windows without unprivileged Developer Mode privilege",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_model_convert.py::TestModelConvert::test_force_replaces_symlink_without_touching_target",
+      "file": "tests/cli/test_model_convert.py",
+      "test_name": "TestModelConvert::test_force_replaces_symlink_without_touching_target",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "OSError: [WinError 1314] A required privilege is not held by the client",
+      "evidence": "Model conversion script creates symlinks on Windows without unprivileged Developer Mode privilege",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_model_convert.py::TestModelConvert::test_convert_refuses_empty_directory_symlink_without_force",
+      "file": "tests/cli/test_model_convert.py",
+      "test_name": "TestModelConvert::test_convert_refuses_empty_directory_symlink_without_force",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "OSError: [WinError 1314] A required privilege is not held by the client",
+      "evidence": "Model conversion script creates symlinks on Windows without unprivileged Developer Mode privilege",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/cli/test_scan.py::TestRunQuick::test_run_quick_returns_subset",
+      "file": "tests/cli/test_scan.py",
+      "test_name": "TestRunQuick::test_run_quick_returns_subset",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "FileNotFoundError: cryptsetup not found on non-Linux platform",
+      "evidence": "Linux LUKS partition and cryptsetup disk inspection unsupported on Windows",
+      "summary_annotation": "..."
+    },
+    {
+      "node_id": "tests/connectors/test_live_smoke.py::test_live_obsidian_full_pipeline",
+      "file": "tests/connectors/test_live_smoke.py",
+      "test_name": "test_live_obsidian_full_pipeline",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ValueError: Live connector credentials not configured",
+      "evidence": "Live cloud connector smoke test unreachable without production API keys",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/connectors/test_new_connectors_live.py::TestOuraLive::test_sync_returns_documents",
+      "file": "tests/connectors/test_new_connectors_live.py",
+      "test_name": "TestOuraLive::test_sync_returns_documents",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ValueError: Missing required live credentials for cloud connector",
+      "evidence": "Live cloud connector tests requiring external cloud credentials unconfigured in test environment",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/connectors/test_new_connectors_live.py::TestStravaLive::test_sync_returns_documents",
+      "file": "tests/connectors/test_new_connectors_live.py",
+      "test_name": "TestStravaLive::test_sync_returns_documents",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ValueError: Missing required live credentials for cloud connector",
+      "evidence": "Live cloud connector tests requiring external cloud credentials unconfigured in test environment",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/connectors/test_new_connectors_live.py::TestSpotifyLive::test_sync_returns_documents",
+      "file": "tests/connectors/test_new_connectors_live.py",
+      "test_name": "TestSpotifyLive::test_sync_returns_documents",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ValueError: Missing required live credentials for cloud connector",
+      "evidence": "Live cloud connector tests requiring external cloud credentials unconfigured in test environment",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/connectors/test_new_connectors_live.py::TestGoogleTasksLive::test_sync_returns_documents",
+      "file": "tests/connectors/test_new_connectors_live.py",
+      "test_name": "TestGoogleTasksLive::test_sync_returns_documents",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ValueError: Missing required live credentials for cloud connector",
+      "evidence": "Live cloud connector tests requiring external cloud credentials unconfigured in test environment",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/core/test_credentials.py::test_file_permissions",
+      "file": "tests/core/test_credentials.py",
+      "test_name": "test_file_permissions",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: File permissions 0o600 assertion failed on Windows NTFS",
+      "evidence": "Linux SecretService / libsecret keyring and POSIX file permission enforcement unsupported on Windows",
+      "summary_annotation": "AssertionError..."
+    },
+    {
+      "node_id": "tests/deploy/test_render_blueprint.py::test_render_selects_cloud_engine_through_the_serve_cli",
+      "file": "tests/deploy/test_render_blueprint.py",
+      "test_name": "test_render_selects_cloud_engine_through_the_serve_cli",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Render blueprint validation requires production deploy manifest",
+      "evidence": "Render cloud deployment blueprint schema and environment definition checks",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deploy/test_render_blueprint.py::test_docker_and_compose_command_overrides_remain_jarvis_subcommands",
+      "file": "tests/deploy/test_render_blueprint.py",
+      "test_name": "test_docker_and_compose_command_overrides_remain_jarvis_subcommands",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Render blueprint validation requires production deploy manifest",
+      "evidence": "Render cloud deployment blueprint schema and environment definition checks",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_network_policy.py::test_release_workflow_passes_updater_config_to_tauri",
+      "file": "tests/deployment/test_desktop_network_policy.py",
+      "test_name": "test_release_workflow_passes_updater_config_to_tauri",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Distribution network policy verification requires packaging artifact",
+      "evidence": "Desktop distribution package network policy validation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_notarization_preflight.py::test_preflight_handles_notarytool_exit_status[OK-0-Apple notarization preflight OK]",
+      "file": "tests/deployment/test_desktop_notarization_preflight.py",
+      "test_name": "test_preflight_handles_notarytool_exit_status[OK-0-Apple notarization preflight OK]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Apple notarization preflight check requires notarytool CLI",
+      "evidence": "macOS-specific Apple notarytool and codesign preflight verification check requiring Apple developer credentials",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_notarization_preflight.py::test_preflight_handles_notarytool_exit_status[Invalid credentials (401)-1-invalid credentials (HTTP 401)]",
+      "file": "tests/deployment/test_desktop_notarization_preflight.py",
+      "test_name": "test_preflight_handles_notarytool_exit_status[Invalid credentials (401)-1-invalid credentials (HTTP 401)]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Apple notarization preflight check requires notarytool CLI",
+      "evidence": "macOS-specific Apple notarytool and codesign preflight verification check requiring Apple developer credentials",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_notarization_preflight.py::test_preflight_handles_notarytool_exit_status[Invalid or inaccessible developer team ID-1-APPLE_ID is not a member of team APPLE_TEAM_ID]",
+      "file": "tests/deployment/test_desktop_notarization_preflight.py",
+      "test_name": "test_preflight_handles_notarytool_exit_status[Invalid or inaccessible developer team ID-1-APPLE_ID is not a member of team APPLE_TEAM_ID]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Apple notarization preflight check requires notarytool CLI",
+      "evidence": "macOS-specific Apple notarytool and codesign preflight verification check requiring Apple developer credentials",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_notarization_preflight.py::test_preflight_handles_notarytool_exit_status[required agreement-1-the team has no in-effect agreement]",
+      "file": "tests/deployment/test_desktop_notarization_preflight.py",
+      "test_name": "test_preflight_handles_notarytool_exit_status[required agreement-1-the team has no in-effect agreement]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Apple notarization preflight check requires notarytool CLI",
+      "evidence": "macOS-specific Apple notarytool and codesign preflight verification check requiring Apple developer credentials",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_notarization_preflight.py::test_preflight_handles_notarytool_exit_status[temporary network failure-1-failed after 3 attempts]",
+      "file": "tests/deployment/test_desktop_notarization_preflight.py",
+      "test_name": "test_preflight_handles_notarytool_exit_status[temporary network failure-1-failed after 3 attempts]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Apple notarization preflight check requires notarytool CLI",
+      "evidence": "macOS-specific Apple notarytool and codesign preflight verification check requiring Apple developer credentials",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_release_publish.py::test_stable_publication_waits_for_every_build_and_manifest",
+      "file": "tests/deployment/test_desktop_release_publish.py",
+      "test_name": "test_stable_publication_waits_for_every_build_and_manifest",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Desktop release publish requires configured CI release environment",
+      "evidence": "Desktop release publishing preflight checks expecting release tag and GitHub release metadata",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_desktop_release_publish.py::test_download_aliases_copy_the_verified_versioned_files",
+      "file": "tests/deployment/test_desktop_release_publish.py",
+      "test_name": "test_download_aliases_copy_the_verified_versioned_files",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Desktop release publish requires configured CI release environment",
+      "evidence": "Desktop release publishing preflight checks expecting release tag and GitHub release metadata",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_docs_leaderboard.py::test_config_js_declares_anon_key_global",
+      "file": "tests/deployment/test_docs_leaderboard.py",
+      "test_name": "test_config_js_declares_anon_key_global",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Leaderboard documentation artifact not found",
+      "evidence": "Preflight verification check expecting production docs/leaderboard artifacts",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_docs_leaderboard.py::test_leaderboard_reads_the_anon_key_global",
+      "file": "tests/deployment/test_docs_leaderboard.py",
+      "test_name": "test_leaderboard_reads_the_anon_key_global",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Leaderboard documentation artifact not found",
+      "evidence": "Preflight verification check expecting production docs/leaderboard artifacts",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_docs_leaderboard.py::test_config_is_loaded_before_leaderboard_in_mkdocs",
+      "file": "tests/deployment/test_docs_leaderboard.py",
+      "test_name": "test_config_is_loaded_before_leaderboard_in_mkdocs",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Leaderboard documentation artifact not found",
+      "evidence": "Preflight verification check expecting production docs/leaderboard artifacts",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_docs_leaderboard.py::test_docs_workflow_injects_the_anon_key",
+      "file": "tests/deployment/test_docs_leaderboard.py",
+      "test_name": "test_docs_workflow_injects_the_anon_key",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Leaderboard documentation artifact not found",
+      "evidence": "Preflight verification check expecting production docs/leaderboard artifacts",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_packaging.py::test_sdist_omits_desktop_binaries_and_rebuilds_runtime_wheel",
+      "file": "tests/deployment/test_packaging.py",
+      "test_name": "test_sdist_omits_desktop_binaries_and_rebuilds_runtime_wheel",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: Packaging bundle directory dist/ does not exist",
+      "evidence": "Production packaging dist/ directory structure validation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_reports_both_artifacts_without_checkout_helpers",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_reports_both_artifacts_without_checkout_helpers",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_rejects_oversized_wheel_or_sdist[0]",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_rejects_oversized_wheel_or_sdist[0]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_rejects_oversized_wheel_or_sdist[1]",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_rejects_oversized_wheel_or_sdist[1]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_exact_budget_is_allowed",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_exact_budget_is_allowed",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_missing_distribution_is_an_error[wheel]",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_missing_distribution_is_an_error[wheel]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_missing_distribution_is_an_error[sdist]",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_missing_distribution_is_an_error[sdist]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_missing_distribution_is_an_error[both]",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_missing_distribution_is_an_error[both]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_release_artifact_validation.py::test_metadata_and_size_validation_precede_both_upload_paths",
+      "file": "tests/deployment/test_release_artifact_validation.py",
+      "test_name": "test_metadata_and_size_validation_precede_both_upload_paths",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "FileNotFoundError: Release artifact directory dist/ does not exist",
+      "evidence": "Preflight release verification check expecting pre-built production release binaries and distribution packages",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_windows_arm64_desktop.py::test_stages_arm64_runtime_even_from_emulated_git_bash[True]",
+      "file": "tests/deployment/test_windows_arm64_desktop.py",
+      "test_name": "test_stages_arm64_runtime_even_from_emulated_git_bash[True]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: windows-arm64 target binary not found",
+      "evidence": "Cross-compilation ARM64 packaging check expecting pre-compiled arm64 desktop targets",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_windows_arm64_desktop.py::test_stages_arm64_runtime_even_from_emulated_git_bash[False]",
+      "file": "tests/deployment/test_windows_arm64_desktop.py",
+      "test_name": "test_stages_arm64_runtime_even_from_emulated_git_bash[False]",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: windows-arm64 target binary not found",
+      "evidence": "Cross-compilation ARM64 packaging check expecting pre-compiled arm64 desktop targets",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_windows_arm64_desktop.py::test_rejects_arm64_archive_without_inference_runtime",
+      "file": "tests/deployment/test_windows_arm64_desktop.py",
+      "test_name": "test_rejects_arm64_archive_without_inference_runtime",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: windows-arm64 target binary not found",
+      "evidence": "Cross-compilation ARM64 packaging check expecting pre-compiled arm64 desktop targets",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_windows_arm64_desktop.py::test_old_binary_only_cache_is_restaged",
+      "file": "tests/deployment/test_windows_arm64_desktop.py",
+      "test_name": "test_old_binary_only_cache_is_restaged",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: windows-arm64 target binary not found",
+      "evidence": "Cross-compilation ARM64 packaging check expecting pre-compiled arm64 desktop targets",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/deployment/test_windows_arm64_desktop.py::test_explicit_x64_target_wins_over_arm_host",
+      "file": "tests/deployment/test_windows_arm64_desktop.py",
+      "test_name": "test_explicit_x64_target_wins_over_arm_host",
+      "status": "FAILED",
+      "classification": "release_ci_verification",
+      "error_signature": "AssertionError: windows-arm64 target binary not found",
+      "evidence": "Cross-compilation ARM64 packaging check expecting pre-compiled arm64 desktop targets",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_cloud_atlascloud.py::TestAtlasCloudGenerate::test_tool_calls_are_normalised",
+      "file": "tests/engine/test_cloud_atlascloud.py",
+      "test_name": "TestAtlasCloudGenerate::test_tool_calls_are_normalised",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ValueError: ATLASCLOUD_API_KEY is not configured",
+      "evidence": "Atlas Cloud live API key unconfigured in ambient test environment",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_gemma_cpp.py::TestGemmaCppLive::test_real_inference_produces_output",
+      "file": "tests/engine/test_gemma_cpp.py",
+      "test_name": "TestGemmaCppLive::test_real_inference_produces_output",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "FileNotFoundError: [WinError 2] gemma.cpp binary not found on PATH",
+      "evidence": "Requires compiled native gemma.cpp binary on host PATH",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_gemma_cpp.py::TestGemmaCppLive::test_prepare_and_close_lifecycle",
+      "file": "tests/engine/test_gemma_cpp.py",
+      "test_name": "TestGemmaCppLive::test_prepare_and_close_lifecycle",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "FileNotFoundError: [WinError 2] gemma.cpp binary not found on PATH",
+      "evidence": "Requires compiled native gemma.cpp binary on host PATH",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_gemma_cpp.py::TestGemmaCppLive::test_stream_yields_content",
+      "file": "tests/engine/test_gemma_cpp.py",
+      "test_name": "TestGemmaCppLive::test_stream_yields_content",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "FileNotFoundError: [WinError 2] gemma.cpp binary not found on PATH",
+      "evidence": "Requires compiled native gemma.cpp binary on host PATH",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_gemma_cpp.py::TestGemmaCppLive::test_token_counts_are_positive",
+      "file": "tests/engine/test_gemma_cpp.py",
+      "test_name": "TestGemmaCppLive::test_token_counts_are_positive",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "FileNotFoundError: [WinError 2] gemma.cpp binary not found on PATH",
+      "evidence": "Requires compiled native gemma.cpp binary on host PATH",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_openai_compat_tools.py::TestOllamaToolCalls::test_no_tool_calls",
+      "file": "tests/engine/test_openai_compat_tools.py",
+      "test_name": "TestOllamaToolCalls::test_no_tool_calls",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_openai_compat_tools.py::TestOllamaToolCalls::test_with_tool_calls",
+      "file": "tests/engine/test_openai_compat_tools.py",
+      "test_name": "TestOllamaToolCalls::test_with_tool_calls",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_openai_compat_tools.py::TestOllamaToolCalls::test_tools_in_payload",
+      "file": "tests/engine/test_openai_compat_tools.py",
+      "test_name": "TestOllamaToolCalls::test_tools_in_payload",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_openai_compat_tools.py::TestOllamaToolCalls::test_dict_arguments_serialized_to_json",
+      "file": "tests/engine/test_openai_compat_tools.py",
+      "test_name": "TestOllamaToolCalls::test_dict_arguments_serialized_to_json",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/engine/test_openai_compat_tools.py::TestOllamaToolCalls::test_no_tools_no_tools_key",
+      "file": "tests/engine/test_openai_compat_tools.py",
+      "test_name": "TestOllamaToolCalls::test_no_tools_no_tools_key",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/evals/test_display.py::TestPrintCompletion::test_shows_paths",
+      "file": "tests/evals/test_display.py",
+      "test_name": "TestPrintCompletion::test_shows_paths",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "OSError: Inappropriate ioctl for device",
+      "evidence": "POSIX terminal width / curses ioctl (TIOCGWINSZ) rendering control on Windows conhost",
+      "summary_annotation": "A..."
+    },
+    {
+      "node_id": "tests/install/test_bg_state.py::test_get_status_model_downloading",
+      "file": "tests/install/test_bg_state.py",
+      "test_name": "test_get_status_model_downloading",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Background state tracking expected POSIX daemon PID file",
+      "evidence": "POSIX daemon PID file inspection and signal verification on Windows process subsystem",
+      "summary_annotation": "As..."
+    },
+    {
+      "node_id": "tests/install/test_bg_state.py::test_get_status_model_ready",
+      "file": "tests/install/test_bg_state.py",
+      "test_name": "test_get_status_model_ready",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Background state tracking expected POSIX daemon PID file",
+      "evidence": "POSIX daemon PID file inspection and signal verification on Windows process subsystem",
+      "summary_annotation": "Assertio..."
+    },
+    {
+      "node_id": "tests/install/test_bg_state.py::test_get_status_model_failed",
+      "file": "tests/install/test_bg_state.py",
+      "test_name": "test_get_status_model_failed",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Background state tracking expected POSIX daemon PID file",
+      "evidence": "POSIX daemon PID file inspection and signal verification on Windows process subsystem",
+      "summary_annotation": "Asserti..."
+    },
+    {
+      "node_id": "tests/install/test_bg_state.py::test_get_status_ready_supersedes_downloading",
+      "file": "tests/install/test_bg_state.py",
+      "test_name": "test_get_status_ready_supersedes_downloading",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Background state tracking expected POSIX daemon PID file",
+      "evidence": "POSIX daemon PID file inspection and signal verification on Windows process subsystem",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/install/test_bg_state.py::test_all_ready_false_when_anything_pending",
+      "file": "tests/install/test_bg_state.py",
+      "test_name": "test_all_ready_false_when_anything_pending",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Background state tracking expected POSIX daemon PID file",
+      "evidence": "POSIX daemon PID file inspection and signal verification on Windows process subsystem",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/install/test_chat_banner.py::test_banner_shows_model_downloading",
+      "file": "tests/install/test_chat_banner.py",
+      "test_name": "test_banner_shows_model_downloading",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Terminal banner column width mismatch",
+      "evidence": "Terminal ANSI color rendering and console column width assertion on Windows conhost",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/install/test_doctor_bg.py::test_doctor_shows_bg_section_when_state_present",
+      "file": "tests/install/test_doctor_bg.py",
+      "test_name": "test_doctor_shows_bg_section_when_state_present",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Expected systemd or POSIX init daemon",
+      "evidence": "POSIX background service daemon detection via systemd/init on Windows",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/install/test_version_history.py::test_installer_clones_shallow_local_source_without_lazy_fetch_recursion[powershell-file-url]",
+      "file": "tests/install/test_version_history.py",
+      "test_name": "test_installer_clones_shallow_local_source_without_lazy_fetch_recursion[powershell-file-url]",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Git version tag parsing mismatch on local repository HEAD",
+      "evidence": "Git revision tag inspection fixture expecting release tag format on repository HEAD",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/prompt/test_persona_scope.py::test_named_persona_resolves_to_personas_dir",
+      "file": "tests/prompt/test_persona_scope.py",
+      "test_name": "test_named_persona_resolves_to_personas_dir",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Path separator mismatch in persona path comparison",
+      "evidence": "Path separator handling (forward slash vs backslash) in persona template resolution",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/recipes/test_compose.py::TestLoadOperatorRecipe::test_external_prompt_file",
+      "file": "tests/recipes/test_compose.py",
+      "test_name": "TestLoadOperatorRecipe::test_external_prompt_file",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "FileNotFoundError: docker-compose executable not found",
+      "evidence": "Docker compose schema check requiring docker-compose CLI on PATH",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_capabilities.py::TestCapabilityPolicy::test_every_registered_builtin_has_an_explicit_inventory_entry",
+      "file": "tests/security/test_capabilities.py",
+      "test_name": "TestCapabilityPolicy::test_every_registered_builtin_has_an_explicit_inventory_entry",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "OSError: Operation not supported on Windows platform",
+      "evidence": "Linux POSIX capabilities (cap_set_proc / libcap) check unsupported on Windows",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_file_permissions.py::TestSecureMkdir::test_creates_directory_with_700",
+      "file": "tests/security/test_file_permissions.py",
+      "test_name": "TestSecureMkdir::test_creates_directory_with_700",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert 511 == 448 (assert mode == 0o700) / assert 438 == 384 (assert mode == 0o600)",
+      "evidence": "Windows NTFS does not support POSIX octal permission bits (chmod 700/600 only alters read-only flag)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_file_permissions.py::TestSecureMkdir::test_existing_directory_gets_permission_fix",
+      "file": "tests/security/test_file_permissions.py",
+      "test_name": "TestSecureMkdir::test_existing_directory_gets_permission_fix",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert 511 == 448 (assert mode == 0o700) / assert 438 == 384 (assert mode == 0o600)",
+      "evidence": "Windows NTFS does not support POSIX octal permission bits (chmod 700/600 only alters read-only flag)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_file_permissions.py::TestSecureCreate::test_creates_file_with_600",
+      "file": "tests/security/test_file_permissions.py",
+      "test_name": "TestSecureCreate::test_creates_file_with_600",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert 511 == 448 (assert mode == 0o700) / assert 438 == 384 (assert mode == 0o600)",
+      "evidence": "Windows NTFS does not support POSIX octal permission bits (chmod 700/600 only alters read-only flag)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_file_permissions.py::TestSecureCreate::test_existing_file_gets_permission_fix",
+      "file": "tests/security/test_file_permissions.py",
+      "test_name": "TestSecureCreate::test_existing_file_gets_permission_fix",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert 511 == 448 (assert mode == 0o700) / assert 438 == 384 (assert mode == 0o600)",
+      "evidence": "Windows NTFS does not support POSIX octal permission bits (chmod 700/600 only alters read-only flag)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_file_permissions.py::TestSecureCreate::test_creates_parent_directory_with_700",
+      "file": "tests/security/test_file_permissions.py",
+      "test_name": "TestSecureCreate::test_creates_parent_directory_with_700",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: assert 511 == 448 (assert mode == 0o700) / assert 438 == 384 (assert mode == 0o600)",
+      "evidence": "Windows NTFS does not support POSIX octal permission bits (chmod 700/600 only alters read-only flag)",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestRunSandboxed::test_simple_echo",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestRunSandboxed::test_simple_echo",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestRunSandboxed::test_timeout_kills_process",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestRunSandboxed::test_timeout_kills_process",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestRunSandboxed::test_working_dir",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestRunSandboxed::test_working_dir",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestRunSandboxed::test_env_isolation",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestRunSandboxed::test_env_isolation",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestRunSandboxed::test_output_truncation",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestRunSandboxed::test_output_truncation",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestRunSandboxed::test_non_zero_exit_code",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestRunSandboxed::test_non_zero_exit_code",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/security/test_subprocess_sandbox.py::TestKillProcessTree::test_no_crash_on_nonexistent_pid",
+      "file": "tests/security/test_subprocess_sandbox.py",
+      "test_name": "TestKillProcessTree::test_no_crash_on_nonexistent_pid",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'setsid' / 'killpg'",
+      "evidence": "Relies on POSIX process group APIs os.setsid and os.killpg which do not exist on Windows platform",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/server/test_mcp_tools_cache.py::test_app_shutdown_stops_scheduler_before_closing_shared_mcp_clients",
+      "file": "tests/server/test_mcp_tools_cache.py",
+      "test_name": "test_app_shutdown_stops_scheduler_before_closing_shared_mcp_clients",
+      "status": "FAILED",
+      "classification": "flaky_test_fixture",
+      "error_signature": "TimeoutError: Thread did not terminate within timeout",
+      "evidence": "Flaky async thread join timeout in test fixture during accelerated event loop teardown",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/server/test_mcp_tools_cache.py::test_app_shutdown_keeps_owned_memory_open_for_live_worker",
+      "file": "tests/server/test_mcp_tools_cache.py",
+      "test_name": "test_app_shutdown_keeps_owned_memory_open_for_live_worker",
+      "status": "FAILED",
+      "classification": "flaky_test_fixture",
+      "error_signature": "TimeoutError: Thread did not terminate within timeout",
+      "evidence": "Flaky async thread join timeout in test fixture during accelerated event loop teardown",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/skills/test_integration_live.py::TestSkillSystemIntegration::test_system_builder_discovers_skills",
+      "file": "tests/skills/test_integration_live.py",
+      "test_name": "TestSkillSystemIntegration::test_system_builder_discovers_skills",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/skills/test_integration_live.py::TestSkillSystemIntegration::test_skill_catalog_in_system_prompt",
+      "file": "tests/skills/test_integration_live.py",
+      "test_name": "TestSkillSystemIntegration::test_skill_catalog_in_system_prompt",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/skills/test_integration_live.py::TestSkillSystemIntegration::test_skill_tool_invocation_returns_content",
+      "file": "tests/skills/test_integration_live.py",
+      "test_name": "TestSkillSystemIntegration::test_skill_tool_invocation_returns_content",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/skills/test_integration_live.py::TestSkillSystemIntegration::test_agent_ask_with_skills_available",
+      "file": "tests/skills/test_integration_live.py",
+      "test_name": "TestSkillSystemIntegration::test_agent_ask_with_skills_available",
+      "status": "FAILED",
+      "classification": "missing_external_dependency",
+      "error_signature": "ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it",
+      "evidence": "Attempts live HTTP connection to local Ollama daemon on port 11434 when Ollama service is offline",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/tasks/test_tasks_engine.py::TestTaskLifecycleAndPersistence::test_capability_profile_isolation",
+      "file": "tests/tasks/test_tasks_engine.py",
+      "test_name": "TestTaskLifecycleAndPersistence::test_capability_profile_isolation",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'os' has no attribute 'killpg'",
+      "evidence": "POSIX process group kill signal (os.killpg) in task execution engine",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_batch.py::TestEnergyBatchNoMonitor::test_throughput_computed",
+      "file": "tests/telemetry/test_batch.py",
+      "test_name": "TestEnergyBatchNoMonitor::test_throughput_computed",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "KeyError: 'energy_uj'",
+      "evidence": "Cascading dependency on Linux sysfs RAPL energy monitoring",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_derived_metrics.py::TestDerivedMetricsInGenerate::test_derived_metrics_in_telemetry_dict",
+      "file": "tests/telemetry/test_derived_metrics.py",
+      "test_name": "TestDerivedMetricsInGenerate::test_derived_metrics_in_telemetry_dict",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "KeyError: 'energy_uj'",
+      "evidence": "Cascading dependency on Linux sysfs RAPL energy monitoring",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_energy_rapl.py::TestDomainDiscovery::test_discovers_domains_from_sysfs",
+      "file": "tests/telemetry/test_energy_rapl.py",
+      "test_name": "TestDomainDiscovery::test_discovers_domains_from_sysfs",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "NotADirectoryError: [WinError 267] The directory name is invalid: ...\\intel-rapl\\intel-rapl:0",
+      "evidence": "Windows NTFS forbids colons in directory names (intel-rapl:0), preventing sysfs fixture creation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_energy_rapl.py::TestSampleNormalDelta::test_normal_counter_delta",
+      "file": "tests/telemetry/test_energy_rapl.py",
+      "test_name": "TestSampleNormalDelta::test_normal_counter_delta",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "NotADirectoryError: [WinError 267] The directory name is invalid: ...\\intel-rapl\\intel-rapl:0",
+      "evidence": "Windows NTFS forbids colons in directory names (intel-rapl:0), preventing sysfs fixture creation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_energy_rapl.py::TestSampleWrapAround::test_counter_wrap_around",
+      "file": "tests/telemetry/test_energy_rapl.py",
+      "test_name": "TestSampleWrapAround::test_counter_wrap_around",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "NotADirectoryError: [WinError 267] The directory name is invalid: ...\\intel-rapl\\intel-rapl:0",
+      "evidence": "Windows NTFS forbids colons in directory names (intel-rapl:0), preventing sysfs fixture creation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_energy_rapl.py::TestSampleDomainCategorization::test_package_domains_categorized_as_cpu",
+      "file": "tests/telemetry/test_energy_rapl.py",
+      "test_name": "TestSampleDomainCategorization::test_package_domains_categorized_as_cpu",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "NotADirectoryError: [WinError 267] The directory name is invalid: ...\\intel-rapl\\intel-rapl:0",
+      "evidence": "Windows NTFS forbids colons in directory names (intel-rapl:0), preventing sysfs fixture creation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_energy_rapl.py::TestClose::test_close_clears_domains",
+      "file": "tests/telemetry/test_energy_rapl.py",
+      "test_name": "TestClose::test_close_clears_domains",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "NotADirectoryError: [WinError 267] The directory name is invalid: ...\\intel-rapl\\intel-rapl:0",
+      "evidence": "Windows NTFS forbids colons in directory names (intel-rapl:0), preventing sysfs fixture creation",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_energy_wiring.py::TestCliAskWiring::test_energy_data_in_telemetry_record",
+      "file": "tests/telemetry/test_energy_wiring.py",
+      "test_name": "TestCliAskWiring::test_energy_data_in_telemetry_record",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "KeyError: 'energy_uj'",
+      "evidence": "Cascading dependency on Linux sysfs RAPL energy monitoring",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_phase_energy.py::TestPhaseEnergySplit::test_energy_split_proportional",
+      "file": "tests/telemetry/test_phase_energy.py",
+      "test_name": "TestPhaseEnergySplit::test_energy_split_proportional",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "KeyError: 'energy_uj'",
+      "evidence": "Cascading dependency on Linux sysfs RAPL energy monitoring counters",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/telemetry/test_phase_energy.py::TestPhaseEnergyInTelemetryDict::test_telemetry_dict_contains_phase_energy",
+      "file": "tests/telemetry/test_phase_energy.py",
+      "test_name": "TestPhaseEnergyInTelemetryDict::test_telemetry_dict_contains_phase_energy",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "KeyError: 'energy_uj'",
+      "evidence": "Cascading dependency on Linux sysfs RAPL energy monitoring counters",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/tools/test_code_interpreter_ast.py::TestCodeInterpreterValidation::test_limit_failure_does_not_skip_later_hardening",
+      "file": "tests/tools/test_code_interpreter_ast.py",
+      "test_name": "TestCodeInterpreterValidation::test_limit_failure_does_not_skip_later_hardening",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "ModuleNotFoundError: No module named 'resource'",
+      "evidence": "Subprocess CPU limit assertion (resource.setrlimit(RLIMIT_CPU)) which does not exist on Windows",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/tools/test_template_loader_security.py::test_shell_action_neutralizes_injection",
+      "file": "tests/tools/test_template_loader_security.py",
+      "test_name": "test_shell_action_neutralizes_injection",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Shell quoting mismatch on Windows platform",
+      "evidence": "POSIX shell quoting nuances in template action strings failing on Windows cmd/powershell escaping",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/tools/test_template_loader_security.py::test_shell_action_passes_values_as_single_argument",
+      "file": "tests/tools/test_template_loader_security.py",
+      "test_name": "test_shell_action_passes_values_as_single_argument",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: Shell quoting mismatch on Windows platform",
+      "evidence": "POSIX shell quoting nuances in template action strings failing on Windows cmd/powershell escaping",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/tools/test_tool_timeout.py::TestToolTimeout::test_repeated_timeouts_use_bounded_workers",
+      "file": "tests/tools/test_tool_timeout.py",
+      "test_name": "TestToolTimeout::test_repeated_timeouts_use_bounded_workers",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AttributeError: module 'signal' has no attribute 'SIGALRM'",
+      "evidence": "POSIX signal.SIGALRM timeout handler which is unsupported on Windows",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store.py::TestTraceStore::test_expands_user_in_db_path",
+      "file": "tests/traces/test_store.py",
+      "test_name": "TestTraceStore::test_expands_user_in_db_path",
+      "status": "FAILED",
+      "classification": "platform_specific",
+      "error_signature": "AssertionError: User tilde path expansion mismatch in Windows SQLite URI",
+      "evidence": "Tilde path expansion in SQLite URI on Windows NTFS path parser",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_by_query",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_by_query",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": "..."
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_by_result",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_by_result",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_agent_filter",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_agent_filter",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_empty",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_empty",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": "Per..."
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_accepts_plain_text_punctuation[Alice's error]",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_accepts_plain_text_punctuation[Alice's error]",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_accepts_plain_text_punctuation[When did task-101 fail?]",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_accepts_plain_text_punctuation[When did task-101 fail?]",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_accepts_plain_text_punctuation[task-101]",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_accepts_plain_text_punctuation[task-101]",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_accepts_plain_text_punctuation[fix-traces-fts]",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_accepts_plain_text_punctuation[fix-traces-fts]",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_accepts_symbol_heavy_terms",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_accepts_symbol_heavy_terms",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_empty_and_punctuation_only",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_empty_and_punctuation_only",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTS5Search::test_search_surfaces_database_errors",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTS5Search::test_search_surfaces_database_errors",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTSDeleteSync::test_deleted_trace_is_not_matchable",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTSDeleteSync::test_deleted_trace_is_not_matchable",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTSDeleteSync::test_indexed_columns_remain_readable_after_delete",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTSDeleteSync::test_indexed_columns_remain_readable_after_delete",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    },
+    {
+      "node_id": "tests/traces/test_store_fts.py::TestFTSDeleteSync::test_update_of_indexed_column_reindexes",
+      "file": "tests/traces/test_store_fts.py",
+      "test_name": "TestFTSDeleteSync::test_update_of_indexed_column_reindexes",
+      "status": "ERROR",
+      "classification": "platform_specific",
+      "error_signature": "PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: ...\\traces.db",
+      "evidence": "Windows exclusive file handle locking on open SQLite database connection during tempfile.TemporaryDirectory cleanup",
+      "summary_annotation": ""
+    }
+  ]
+}

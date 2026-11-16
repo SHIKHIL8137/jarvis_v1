@@ -1,9 +1,10 @@
 # Jarvis V1 — Final Security Hardening, Process Isolation, Voice Emoji Remediation and Independent Audit
 
-**Date:** 2026-11-15  
+**Date:** 2026-11-16  
 **Auditor:** Principal AI Systems & Security Architect  
+**Version:** Jarvis V1 Release Candidate (Version 11 Pass)  
 **Target Repository:** Jarvis V1 (`oprn-jarvis`)  
-**Scope:** Source-level verification and hardening of Voice Mode speech emoji normalization, FORGE workspace-level authorization and container sandboxing, symlink escape rejection, n8n exact structured correlation and pagination truncation handling, model discovery HTTP 401 classification, capability confidence policy enforcement, and multi-agent test reproducibility.
+**Scope:** Source-level verification and hardening of Voice Mode speech emoji normalization, FORGE workspace-level authorization and container sandboxing, symlink escape rejection, broad exception review, system boundary confinement, n8n exact structured correlation and pagination truncation handling, model discovery HTTP 401 classification, capability confidence policy enforcement, and multi-agent test reproducibility.
 
 ---
 
@@ -44,6 +45,11 @@ An independent, rigorous source-level security audit and remediation pass (Versi
    - **Fail-Closed Reparse Points & Inaccessible Parents:** `is_link_or_reparse()` propagates `(PermissionError, RuntimeError, OSError)`. Parent link inspection errors similarly fail closed.
    - **Strict Broken Link Containment:** Broken symlinks targeting inside the workspace are permitted; broken symlinks targeting outside the workspace are blocked.
    - **Zero Subprocess Execution Guarantee:** All blocked commands return with `status="blocked"`, `passed=False`, and zero subprocess execution. Verified across 10 regression tests in `tests/workforce/test_forge_sandboxing_p0.py`.
+
+6. **Broad Exception Elimination & System Boundary Discovery Confinement (`src/openjarvis/sandbox/verification_runner.py`):**
+   - **Fail-Closed Candidate Path Inspection:** Eliminated `except Exception: candidate_exists = False` in candidate argument checking. Swallowing exceptions previously allowed uninspected paths (e.g. disk I/O errors, invalid encodings, null bytes) to bypass resolution checks. Now explicitly fails closed: `Security boundary violation: argument '{tok}' path inspection failed: ...`.
+   - **System Boundary Discovery Confinement (`determine_workspace_root`):** Safeguarded boundary resolution for `tempfile.gettempdir()` and `Path.home()`. If system boundaries cannot be safely determined, the runner fails closed by confining the workspace root to `resolved_cwd`, preventing upward directory climbing into parent directories. Directory traversal also stops immediately upon encountering inaccessible directories or if a parent escapes `allowed_dirs`.
+   - **Separation of Authorization vs Operational Exceptions:** Authorization decisions (path resolution, boundary checks, link inspections) strictly fail closed with `status="blocked"` and zero execution. Operational failures during execution (timeouts, container runtime errors) return `status="failed"` with stderr details, maintaining clear boundaries between security gating and process execution.
 
 ---
 
@@ -120,7 +126,7 @@ Pre-Transmission     Ambiguous     200 OK           4xx / 5xx
 
 | Test Suite | Focus Area | Tests | Status |
 |---|---|---|---|
-| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; two-tier workspace validation; symlink containment within workspace root; outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative/absolute symlink, with/without Docker, nonexistent destination under escaping symlink; symlink loops (`RuntimeError`); Windows junctions & reparse points; broken symlinks (inside permitted, outside blocked); fail-closed `readlink()` on PermissionError and OSError; fail-closed unsupported junction inspection (`NotImplementedError`); chained symlink escapes; fail-closed path resolution failure (`PermissionError` & `OSError`); multiple authorized workspaces (`extra_authorized_roots`); zero subprocess execution verification for all blocked paths; raw command path escape scan; UNC, traversal, drive root escapes; host secrets scrubbed; container isolation flags | 40 | 40 PASSED (0 skipped, 0 failed) in 6.02s |
+| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; two-tier workspace validation; symlink containment within workspace root; outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative/absolute symlink, with/without Docker, nonexistent destination under escaping symlink; symlink loops (`RuntimeError`); Windows junctions & reparse points; broken symlinks (inside permitted, outside blocked); fail-closed `readlink()` on PermissionError and OSError; fail-closed unsupported junction inspection (`NotImplementedError`); chained symlink escapes; fail-closed path resolution failure (`PermissionError` & `OSError`); multiple authorized workspaces (`extra_authorized_roots`); fail-closed candidate path inspection failures; system boundary discovery confinement to cwd; zero subprocess execution verification for all blocked paths; raw command path escape scan; UNC, traversal, drive root escapes; host secrets scrubbed; container isolation flags | 42 | 42 PASSED (0 skipped, 0 failed) in 6.05s |
 | `tests/workforce/test_forge_command_security.py` | Allowlist enforcement, dangerous shell operators, path traversal, real subprocess execution | 5 | 5 PASSED |
 | `tests/workforce/test_forge_security_p0.py` | Cross-process workspace locking, dirty git snapshot containment, verification states | 7 | 7 PASSED |
 | `tests/workforce/test_forge_coding_integration.py` | OpenCode integration, GoalLoop verification, task dispatch | 3 | 3 PASSED |
@@ -139,11 +145,11 @@ Pre-Transmission     Ambiguous     200 OK           4xx / 5xx
 | `tests/workforce/test_workforce_routes.py` | Workforce FastAPI router endpoints, agent listing, task delegation | 4 | 4 PASSED |
 | `tests/workforce/test_workforce_security.py` | Workforce security boundaries, role permissions | 5 | 5 PASSED |
 | `tests/workforce/test_workforce_e2e.py` | Full multi-agent workforce ERP audit DAG with deterministic fixtures | 1 | 1 PASSED |
-| **Comprehensive Targeted Suite (19 Files)** | **Workforce, models, tools, sandbox, connectors full regression** | **182** | **181 PASSED, 1 SKIPPED, 0 FAILED** in 34.71s |
+| **Comprehensive Targeted Suite (19 Files)** | **Workforce, models, tools, sandbox, connectors full regression** | **190** | **189 PASSED, 1 SKIPPED, 0 FAILED** in 29.60s |
 | `frontend/src/components/Chat/VoiceMode.test.tsx` | VoiceMode actual speech synthesis invocations (`window.speechSynthesis.speak`), DOM emoji retention, all 11 conditions (flags, ZWJ, skin tones, keycaps, streaming, barge-in) | 15 | 15 PASSED |
-| Full Frontend Vitest Suite | Store, API, Auth, Telemetry, Capabilities, UI modals, VoiceMode, TTS | 148 passed (24 files) | 148 PASSED (0 failed) in 4.89s |
-| Production Frontend Build | Vite v8.3.4 static compilation & PWA generation (`tsc -b && vite build`) | 3,506 modules | SUCCESS (0 errors) in 2.01s |
-| Repository-Wide Test Suite | Comprehensive 9,726 tests across all historical and current modules | 9,726 | 9,390 PASSED, 194 SKIPPED, 128 FAILED, 14 ERRORS in 3,111.01s (51m 51s) |
+| Full Frontend Vitest Suite | Store, API, Auth, Telemetry, Capabilities, UI modals, VoiceMode, TTS | 148 passed (24 files) | 148 PASSED (0 failed) in 2.17s |
+| Production Frontend Build | Vite v8.3.4 static compilation & PWA generation (`tsc -b && vite build`) | 3,506 modules | SUCCESS (0 errors) in 1.17s |
+| Repository-Wide Test Suite | Comprehensive 9,726 tests across all historical and current modules | 9,726 | 9,390 PASSED, 194 SKIPPED, 128 FAILED, 14 ERRORS in 3,111.01s (51m 51s) — Manifested in `docs/failure_manifest_v11.json` |
 
 ---
 
