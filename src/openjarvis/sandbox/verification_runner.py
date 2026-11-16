@@ -69,14 +69,17 @@ PROJECT_ROOT_MARKERS: frozenset[str] = frozenset({
 
 def is_link_or_reparse(path: Path | str) -> bool:
     """Check if path is a symbolic link or Windows junction / reparse point."""
+    p = Path(path)
     try:
-        p = Path(path)
         if p.is_symlink():
             return True
         if hasattr(os.path, "isjunction") and os.path.isjunction(str(p)):
             return True
-    except (OSError, ValueError):
-        pass
+    except (FileNotFoundError, ValueError):
+        return False
+    except (PermissionError, RuntimeError, OSError):
+        # A path whose link status cannot be safely inspected must fail closed
+        raise
     return False
 
 
@@ -524,8 +527,8 @@ class IsolatedVerificationRunner:
                             resolved_immediate = target_path.resolve(strict=False)
                             if not is_path_within_workspace_root(resolved_immediate, ws_root, extra_authorized_roots):
                                 return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
-                        except (OSError, NotImplementedError):
-                            pass
+                        except (OSError, NotImplementedError, PermissionError, RuntimeError) as read_err:
+                            return f"Security boundary violation: argument '{tok}' is a link whose target cannot be safely inspected: {read_err}"
                         real_target = cand_path.resolve(strict=False)
                         if not is_path_within_workspace_root(real_target, ws_root, extra_authorized_roots):
                             return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
@@ -546,8 +549,8 @@ class IsolatedVerificationRunner:
                                 resolved_immediate = target_path.resolve(strict=False)
                                 if not is_path_within_workspace_root(resolved_immediate, ws_root, extra_authorized_roots):
                                     return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
-                            except (OSError, NotImplementedError):
-                                pass
+                            except (OSError, NotImplementedError, PermissionError, RuntimeError) as p_read_err:
+                                return f"Security boundary violation: argument '{tok}' parent is a link whose target cannot be safely inspected: {p_read_err}"
                             if not is_path_within_workspace_root(curr_parent.resolve(strict=False), ws_root, extra_authorized_roots):
                                 return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
                         if curr_parent == resolved_cwd or curr_parent == ws_root:
@@ -557,13 +560,20 @@ class IsolatedVerificationRunner:
                     return f"Security boundary violation: argument '{tok}' parent path cannot be safely validated: {parent_err}"
 
                 # Resolution check for any path-like argument, filename, or nonexistent path
+                try:
+                    candidate_exists = (resolved_cwd / decoded_part).exists() or is_link_or_reparse(resolved_cwd / decoded_part)
+                except (PermissionError, RuntimeError, OSError) as acc_err:
+                    return f"Security boundary violation: argument '{tok}' cannot be safely inspected: {acc_err}"
+                except Exception:
+                    candidate_exists = False
+
                 is_path_like = (
                     any(part.startswith(p) for p in ("/", "\\", "."))
                     or re.match(r"^[a-zA-Z]:", part) is not None
                     or "/" in part
                     or "\\" in part
-                    or (resolved_cwd / decoded_part).exists()
-                    or is_link_or_reparse(resolved_cwd / decoded_part)
+                    or "." in part
+                    or candidate_exists
                 )
                 if is_path_like:
                     try:
@@ -686,7 +696,18 @@ class IsolatedVerificationRunner:
             workspace_root=workspace_root or self.workspace_root,
             allowed_dirs=allowed_dirs,
         )
-        extra_roots = [Path(r).resolve() for r in (extra_authorized_roots or [])]
+        try:
+            extra_roots = [Path(r).resolve() for r in (extra_authorized_roots or [])]
+        except Exception as extra_err:
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: cannot resolve extra authorized root: {extra_err}",
+                "sandbox_mode": "blocked",
+            }
 
         if not is_path_within_allowed(ws_root, allowed_dirs, safe_by_default=safe_by_default):
             return {

@@ -66,6 +66,23 @@ def symlink_or_simulated(link_path: Path, target_path: Path):
         yield link_path
 
 
+@contextmanager
+def record_verification_executions():
+    """Record any verification command subprocess execution while allowing internal probes (docker/podman/nvidia-smi)."""
+    import subprocess
+    orig_run = subprocess.run
+    verification_calls = []
+
+    def tracking_run(args, *a, **kw):
+        if args and isinstance(args, (list, tuple)) and any(p in str(args[0]).lower() for p in ("docker", "podman", "nvidia-smi")):
+            return orig_run(args, *a, **kw)
+        verification_calls.append((args, kw))
+        return MagicMock(returncode=0, stdout="verification_mock_success\n", stderr="")
+
+    with patch("subprocess.run", side_effect=tracking_run):
+        yield verification_calls
+
+
 def test_forge_blocks_inline_python_c_without_container(tmp_path):
     """'python -c' inline script must fail closed with status='blocked' when container sandbox is unavailable."""
     runner = IsolatedVerificationRunner()
@@ -593,7 +610,7 @@ def test_nonexistent_destination_under_escaping_symlink_blocked(tmp_path):
 
 
 def test_symlink_loop_blocked(tmp_path):
-    """Symlink loop resulting in resolution recursion must be blocked and fail closed."""
+    """4. Symlink loop resulting in resolution recursion must be blocked and fail closed with zero execution."""
     runner = IsolatedVerificationRunner()
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -609,11 +626,12 @@ def test_symlink_loop_blocked(tmp_path):
             raise RuntimeError("Symlink loop detected: too many levels of symbolic links")
         return orig_resolve(self, strict=strict)
 
-    with patch.object(Path, "resolve", mock_resolve_loop):
+    with patch.object(Path, "resolve", mock_resolve_loop), record_verification_executions() as calls:
         res = runner.execute_verification_command("python loop_a", cwd=str(ws))
         assert res["passed"] is False
         assert res["status"] == VerificationOutcome.BLOCKED.value
         assert "cannot be safely" in res["output"] or "Symlink loop" in res["output"]
+        assert len(calls) == 0
 
 
 def test_windows_junction_escape_blocked(tmp_path):
@@ -690,24 +708,82 @@ def test_windows_junction_inside_workspace_permitted(tmp_path):
                 assert res["status"] == VerificationOutcome.PASSED.value
 
 
-def test_broken_symlink_outside_workspace_blocked(tmp_path):
-    """Broken symlink targeting nonexistent outside path must be blocked."""
+def test_readlink_permission_error_fails_closed(tmp_path):
+    """1. readlink() raising PermissionError on a detected link must fail closed with BLOCKED status and zero subprocess execution."""
     runner = IsolatedVerificationRunner()
     ws = tmp_path / "ws"
     ws.mkdir()
-    outside_nonexistent = tmp_path / "outside_dir" / "does_not_exist.py"
+    link_file = ws / "perm_link.py"
+    link_file.write_text("print('link')")
 
-    broken_link = ws / "broken_out.py"
-    with symlink_or_simulated(broken_link, outside_nonexistent):
-        with patch.object(runner, "is_container_runtime_available", return_value=False):
-            res = runner.execute_verification_command(f"python {broken_link.name}", cwd=str(ws))
-            assert res["passed"] is False
-            assert res["status"] == VerificationOutcome.BLOCKED.value
-            assert "resolves outside authorized workspace via symlink" in res["output"]
+    orig_readlink = os.readlink
+    def mock_readlink(p):
+        if str(p) == str(link_file) or Path(p).name == link_file.name:
+            raise PermissionError("EACCES: permission denied to read symbolic link")
+        return orig_readlink(p)
+
+    with patch("openjarvis.sandbox.verification_runner.is_link_or_reparse", return_value=True), \
+         patch("os.readlink", side_effect=mock_readlink), \
+         record_verification_executions() as calls:
+        res = runner.execute_verification_command("python perm_link.py", cwd=str(ws))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert "cannot be safely inspected" in res["output"] or "permission denied" in res["output"].lower()
+        assert len(calls) == 0
+
+
+def test_readlink_oserror_fails_closed(tmp_path):
+    """2. readlink() raising OSError on a detected link must fail closed with BLOCKED status and zero subprocess execution."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    link_file = ws / "oserr_link.py"
+    link_file.write_text("print('link')")
+
+    orig_readlink = os.readlink
+    def mock_readlink(p):
+        if str(p) == str(link_file) or Path(p).name == link_file.name:
+            raise OSError("EIO: hardware error or bad reparse point")
+        return orig_readlink(p)
+
+    with patch("openjarvis.sandbox.verification_runner.is_link_or_reparse", return_value=True), \
+         patch("os.readlink", side_effect=mock_readlink), \
+         record_verification_executions() as calls:
+        res = runner.execute_verification_command("python oserr_link.py", cwd=str(ws))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert "cannot be safely inspected" in res["output"] or "EIO" in res["output"]
+        assert len(calls) == 0
+
+
+def test_unsupported_junction_inspection_fails_closed(tmp_path):
+    """3. Unsupported junction inspection raising NotImplementedError must fail closed with BLOCKED status and zero subprocess execution."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    junc_file = ws / "unsupported_junc"
+    junc_file.mkdir()
+    child_test = junc_file / "test_run.py"
+    child_test.write_text("print('test')")
+
+    orig_readlink = os.readlink
+    def mock_readlink(p):
+        if str(p) == str(junc_file) or Path(p).name == junc_file.name:
+            raise NotImplementedError("Reparse tag 0x80000018 inspection not implemented")
+        return orig_readlink(p)
+
+    with patch("openjarvis.sandbox.verification_runner.is_link_or_reparse", return_value=True), \
+         patch("os.readlink", side_effect=mock_readlink), \
+         record_verification_executions() as calls:
+        res = runner.execute_verification_command("python unsupported_junc/test_run.py", cwd=str(ws))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert "cannot be safely inspected" in res["output"] or "not implemented" in res["output"].lower()
+        assert len(calls) == 0
 
 
 def test_broken_symlink_inside_workspace_permitted(tmp_path):
-    """Broken symlink targeting nonexistent inside path is permitted for workspace execution."""
+    """5. Broken symlink targeting nonexistent inside path is permitted for workspace execution."""
     runner = IsolatedVerificationRunner()
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -715,20 +791,107 @@ def test_broken_symlink_inside_workspace_permitted(tmp_path):
 
     broken_link = ws / "broken_in.py"
     with symlink_or_simulated(broken_link, inside_nonexistent):
-        with patch.object(runner, "is_container_runtime_available", return_value=False):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout="generated\n", stderr="")
-                res = runner.execute_verification_command(
-                    f"python {broken_link.name}",
-                    cwd=str(ws),
-                    trusted_environment=True,
-                )
-                assert res["passed"] is True
-                assert res["status"] == VerificationOutcome.PASSED.value
+        with patch.object(runner, "is_container_runtime_available", return_value=False), \
+             record_verification_executions() as calls:
+            res = runner.execute_verification_command(
+                f"python {broken_link.name}",
+                cwd=str(ws),
+                trusted_environment=True,
+            )
+            assert res["passed"] is True
+            assert res["status"] == VerificationOutcome.PASSED.value
+            assert len(calls) == 1
+
+
+def test_broken_symlink_outside_workspace_blocked(tmp_path):
+    """6. Broken symlink targeting nonexistent outside path must be blocked with zero subprocess execution."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_nonexistent = tmp_path / "outside_dir" / "does_not_exist.py"
+
+    broken_link = ws / "broken_out.py"
+    with symlink_or_simulated(broken_link, outside_nonexistent):
+        with patch.object(runner, "is_container_runtime_available", return_value=False), \
+             record_verification_executions() as calls:
+            res = runner.execute_verification_command(f"python {broken_link.name}", cwd=str(ws))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace via symlink" in res["output"]
+            assert len(calls) == 0
+
+
+def test_legitimate_internal_symlink_permitted(tmp_path):
+    """7. Legitimate internal symlink pointing within authorized workspace is permitted and executes."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target_file = ws / "valid_target.py"
+    target_file.write_text("print('legitimate')")
+
+    link_file = ws / "internal_link.py"
+    with symlink_or_simulated(link_file, target_file):
+        with patch.object(runner, "is_container_runtime_available", return_value=False), \
+             record_verification_executions() as calls:
+            res = runner.execute_verification_command(
+                f"python {link_file.name}",
+                cwd=str(ws),
+                trusted_environment=True,
+            )
+            assert res["passed"] is True
+            assert res["status"] == VerificationOutcome.PASSED.value
+            assert len(calls) == 1
+
+
+def test_external_chained_symlink_blocked(tmp_path):
+    """8. Chained symlink resolving outside authorized workspace must be blocked with zero subprocess execution."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_file = tmp_path / "secret_outside.py"
+    outside_file.write_text("secret = 42")
+
+    intermediate_link = ws / "mid_link.py"
+    link1 = ws / "outer_link.py"
+
+    orig_is_symlink = Path.is_symlink
+    orig_readlink = os.readlink
+    orig_resolve = Path.resolve
+
+    def mock_is_symlink(self):
+        if self.name in ("outer_link.py", "mid_link.py"):
+            return True
+        return orig_is_symlink(self)
+
+    def mock_readlink(p):
+        p_name = Path(p).name
+        if p_name == "outer_link.py":
+            return str(intermediate_link)
+        if p_name == "mid_link.py":
+            return str(outside_file)
+        return orig_readlink(p)
+
+    def mock_resolve(self, strict=False):
+        if self.name in ("outer_link.py", "mid_link.py"):
+            return outside_file.resolve(strict=False)
+        return orig_resolve(self, strict=strict)
+
+    link1.write_text("placeholder")
+    intermediate_link.write_text("placeholder")
+
+    with patch.object(Path, "is_symlink", mock_is_symlink), \
+         patch("os.readlink", mock_readlink), \
+         patch.object(Path, "resolve", mock_resolve), \
+         record_verification_executions() as calls:
+        res = runner.execute_verification_command(f"python {link1.name}", cwd=str(ws))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert "resolves outside authorized workspace via symlink" in res["output"]
+        assert len(calls) == 0
 
 
 def test_extra_authorized_roots_permitted(tmp_path):
-    """Multiple authorized workspaces / extra_authorized_roots allow legitimate cross-workspace references."""
+    """9. Multiple authorized workspaces / extra_authorized_roots allow legitimate cross-workspace references, while blocked calls never execute."""
     runner = IsolatedVerificationRunner()
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -741,18 +904,19 @@ def test_extra_authorized_roots_permitted(tmp_path):
     outside_unauthorized.parent.mkdir()
     outside_unauthorized.write_text("print('bad')")
 
-    # 1. Without extra_authorized_roots: blocked
-    res_no_extra = runner.execute_verification_command(
-        f"python {shared_script.resolve()}",
-        cwd=str(ws),
-        workspace_root=ws,
-    )
-    assert res_no_extra["passed"] is False
-    assert res_no_extra["status"] == VerificationOutcome.BLOCKED.value
+    # 1. Without extra_authorized_roots: blocked, zero execution
+    with record_verification_executions() as calls1:
+        res_no_extra = runner.execute_verification_command(
+            f"python {shared_script.resolve()}",
+            cwd=str(ws),
+            workspace_root=ws,
+        )
+        assert res_no_extra["passed"] is False
+        assert res_no_extra["status"] == VerificationOutcome.BLOCKED.value
+        assert len(calls1) == 0
 
     # 2. With extra_authorized_roots: permitted
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="shared\n", stderr="")
+    with record_verification_executions() as calls2:
         res_with_extra = runner.execute_verification_command(
             f"python {shared_script.resolve()}",
             cwd=str(ws),
@@ -762,20 +926,23 @@ def test_extra_authorized_roots_permitted(tmp_path):
         )
         assert res_with_extra["passed"] is True
         assert res_with_extra["status"] == VerificationOutcome.PASSED.value
+        assert len(calls2) == 1
 
-    # 3. Path outside BOTH primary workspace and extra roots: blocked
-    res_both_outside = runner.execute_verification_command(
-        f"python {outside_unauthorized.resolve()}",
-        cwd=str(ws),
-        workspace_root=ws,
-        extra_authorized_roots=[extra_ws],
-    )
-    assert res_both_outside["passed"] is False
-    assert res_both_outside["status"] == VerificationOutcome.BLOCKED.value
+    # 3. Path outside BOTH primary workspace and extra roots: blocked, zero execution
+    with record_verification_executions() as calls3:
+        res_both_outside = runner.execute_verification_command(
+            f"python {outside_unauthorized.resolve()}",
+            cwd=str(ws),
+            workspace_root=ws,
+            extra_authorized_roots=[extra_ws],
+        )
+        assert res_both_outside["passed"] is False
+        assert res_both_outside["status"] == VerificationOutcome.BLOCKED.value
+        assert len(calls3) == 0
 
 
 def test_permission_denied_path_resolution_fails_closed(tmp_path):
-    """PermissionError during path resolution fails closed with blocked status."""
+    """10a. PermissionError during path resolution fails closed with BLOCKED status and zero execution."""
     runner = IsolatedVerificationRunner()
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -788,11 +955,35 @@ def test_permission_denied_path_resolution_fails_closed(tmp_path):
             raise PermissionError("EACCES: permission denied")
         return orig_resolve(self, strict=strict)
 
-    with patch.object(Path, "resolve", mock_resolve_perm):
+    with patch.object(Path, "resolve", mock_resolve_perm), record_verification_executions() as calls:
         res = runner.execute_verification_command("pytest protected_test.py", cwd=str(ws))
         assert res["passed"] is False
         assert res["status"] == VerificationOutcome.BLOCKED.value
         assert "cannot be safely" in res["output"] or "permission denied" in res["output"]
+        assert len(calls) == 0
+
+
+def test_oserror_path_resolution_fails_closed(tmp_path):
+    """10b. OSError during path resolution fails closed with BLOCKED status and zero execution."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    protected = ws / "protected_test2.py"
+    protected.write_text("print('protected')")
+
+    orig_resolve = Path.resolve
+    def mock_resolve_oserr(self, strict=False):
+        if self.name == "protected_test2.py":
+            raise OSError("EIO: disk controller timeout resolving path")
+        return orig_resolve(self, strict=strict)
+
+    with patch.object(Path, "resolve", mock_resolve_oserr), record_verification_executions() as calls:
+        res = runner.execute_verification_command("pytest protected_test2.py", cwd=str(ws))
+        assert res["passed"] is False
+        assert res["status"] == VerificationOutcome.BLOCKED.value
+        assert "cannot be safely" in res["output"] or "EIO" in res["output"]
+        assert len(calls) == 0
+
 
 
 

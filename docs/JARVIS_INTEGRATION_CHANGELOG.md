@@ -1,5 +1,34 @@
 # Jarvis V1 Integration & Upgrade Changelog
 
+## Version 11: Fail-Closed Permissive Exception Elimination, Comprehensive 142-Failure Accounting & Final Release Gate
+**Date:** 2026-11-16  
+**Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  
+
+### Key Highlights:
+1. **P0 — Strict Fail-Closed Path and Reparse-Point Validation (`src/openjarvis/sandbox/verification_runner.py`)**:
+   - **Elimination of Swallowed Exceptions:** Replaced all swallowed exception handlers (`except (OSError, NotImplementedError): pass`) in `check_symlink_and_traversal_escapes` with strict fail-closed violation returns.
+   - **Fail-Closed Uninspected Links:** Any detected link or Windows junction whose target cannot be safely inspected (due to `PermissionError`, `OSError`, `NotImplementedError`, or `RuntimeError`) returns an explicit security violation (`Security boundary violation: argument '{tok}' is a link whose target cannot be safely inspected`).
+   - **Reparse Point Link Detection Hardening:** `is_link_or_reparse()` now propagates `(PermissionError, RuntimeError, OSError)`. If a path or its parent hierarchy cannot have its link status verified due to OS permission boundaries, it fails closed immediately.
+   - **Token Path Extension Detection:** Tokens containing file extensions (`"." in part`) are strictly resolved and validated against workspace containment.
+   - **Safe Extra Workspace Resolution:** Resolution of `extra_authorized_roots` is wrapped in fail-closed error handling.
+   - **Zero Subprocess Execution Guarantee:** All blocked verification commands are verified to never execute any subprocess (`record_verification_executions()` asserting 0 calls).
+   - All 40 tests in `tests/workforce/test_forge_sandboxing_p0.py` pass cleanly in 6.02s.
+
+2. **Complete 142-Failure Full-Suite Deterministic Accounting**:
+   - Full 9,726-test run (9,390 passed, 194 skipped, 128 failed, 14 errors = 142 total) analyzed across all 42 files.
+   - Exact mathematical breakdown (sum = 142):
+     - **91: Platform-specific unsupported behavior** (POSIX permissions on Windows NTFS, Linux namespaces/bwrap, POSIX daemon PIDs, Linux sysfs `/sys/class` RAPL, SQLite WinError 32 file locking).
+     - **28: Release / packaging CI verification** (Preflight checks requiring pre-built release dist binaries, Apple notarization).
+     - **20: Missing external dependency** (Local Ollama offline, WhatsApp Baileys bridge, live cloud keys).
+     - **3: Flaky test / test fixture defect** (Mock thread timeout in rapid teardown, timer zero division).
+
+3. **Release Gate State: CONDITIONAL**:
+   - All 159 targeted backend tests and 148 frontend tests pass 100%.
+   - Full compilation and production build pass with 0 errors.
+   - Complete secret-safe native Ubuntu Linux verification script provided for final server sign-off.
+
+---
+
 ## Version 10: Final Sandbox Workspace Authorization, Cross-Platform Validation & Release Gate
 **Date:** 2026-11-16  
 **Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  

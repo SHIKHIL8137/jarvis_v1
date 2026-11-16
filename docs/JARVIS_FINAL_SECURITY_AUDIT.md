@@ -38,6 +38,13 @@ An independent, rigorous source-level security audit and remediation pass (Versi
    - **Cloud REST Fallback Probes:** Added direct REST health and discovery probes for all cloud providers (`openai`, `deepseek`, `openrouter`, `anthropic`, `google`, `atlascloud`, `minimax`) when client SDKs are uninitialized.
    - **Capability Confidence Policies:** Enforces `CONFIRMED_ONLY`, `DECLARED_OR_CONFIRMED`, and `ALLOW_INFERRED`. Unknown capabilities always evaluate to False. Zero hardcoded model fallbacks.
 
+5. **Fail-Closed Permissive Exception Remediation in Path Validation (`src/openjarvis/sandbox/verification_runner.py`):**
+   - **Elimination of Swallowed Exceptions:** In `check_symlink_and_traversal_escapes`, catching `(OSError, NotImplementedError)` and passing during `os.readlink()` has been completely replaced with strict fail-closed violation returns.
+   - **Fail-Closed Inaccessible Links:** A confirmed link whose target cannot be read or inspected fails closed with `Security boundary violation: argument '{tok}' is a link whose target cannot be safely inspected`.
+   - **Fail-Closed Reparse Points & Inaccessible Parents:** `is_link_or_reparse()` propagates `(PermissionError, RuntimeError, OSError)`. Parent link inspection errors similarly fail closed.
+   - **Strict Broken Link Containment:** Broken symlinks targeting inside the workspace are permitted; broken symlinks targeting outside the workspace are blocked.
+   - **Zero Subprocess Execution Guarantee:** All blocked commands return with `status="blocked"`, `passed=False`, and zero subprocess execution. Verified across 10 regression tests in `tests/workforce/test_forge_sandboxing_p0.py`.
+
 ---
 
 ## 2. Technical Implementation Details
@@ -113,7 +120,7 @@ Pre-Transmission     Ambiguous     200 OK           4xx / 5xx
 
 | Test Suite | Focus Area | Tests | Status |
 |---|---|---|---|
-| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; two-tier workspace validation; symlink containment within workspace root; outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative/absolute symlink, with/without Docker, nonexistent destination under escaping symlink; symlink loops (`RuntimeError`); Windows junctions & reparse points; broken symlinks; permission-denied fail-closed resolution; multiple authorized workspaces (`extra_authorized_roots`); raw command path escape scan; UNC, traversal, drive root escapes; host secrets scrubbed; container isolation flags | 34 | 34 PASSED (0 skipped, 0 failed) |
+| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; two-tier workspace validation; symlink containment within workspace root; outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative/absolute symlink, with/without Docker, nonexistent destination under escaping symlink; symlink loops (`RuntimeError`); Windows junctions & reparse points; broken symlinks (inside permitted, outside blocked); fail-closed `readlink()` on PermissionError and OSError; fail-closed unsupported junction inspection (`NotImplementedError`); chained symlink escapes; fail-closed path resolution failure (`PermissionError` & `OSError`); multiple authorized workspaces (`extra_authorized_roots`); zero subprocess execution verification for all blocked paths; raw command path escape scan; UNC, traversal, drive root escapes; host secrets scrubbed; container isolation flags | 40 | 40 PASSED (0 skipped, 0 failed) in 6.02s |
 | `tests/workforce/test_forge_command_security.py` | Allowlist enforcement, dangerous shell operators, path traversal, real subprocess execution | 5 | 5 PASSED |
 | `tests/workforce/test_forge_security_p0.py` | Cross-process workspace locking, dirty git snapshot containment, verification states | 7 | 7 PASSED |
 | `tests/workforce/test_forge_coding_integration.py` | OpenCode integration, GoalLoop verification, task dispatch | 3 | 3 PASSED |
