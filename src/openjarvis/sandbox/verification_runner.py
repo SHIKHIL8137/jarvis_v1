@@ -15,10 +15,11 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from openjarvis.core.config import load_config
 from openjarvis.sandbox.mount_security import DEFAULT_BLOCKED_PATTERNS
@@ -49,6 +50,50 @@ ALLOWED_VERIFICATION_EXECUTABLES: frozenset[str] = frozenset({
     "pnpm",
     "yarn",
 })
+
+# Project root markers used to discover workspace boundary from working directory
+PROJECT_ROOT_MARKERS: frozenset[str] = frozenset({
+    ".git",
+    ".hg",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "setup.py",
+    "setup.cfg",
+    "pytest.ini",
+    "tox.ini",
+    "Makefile",
+})
+
+
+def is_path_within_workspace_root(
+    path: Path | str,
+    workspace_root: Path | str,
+    extra_authorized_roots: Optional[Sequence[Path | str]] = None,
+) -> bool:
+    """Check if canonical resolved path is strictly within the authorized workspace root(s).
+
+    Security Rule:
+    A symlink or file path argument must resolve inside the execution's authorized workspace root.
+    Being within a broader allowed parent directory (e.g. system tempdir) is NOT sufficient.
+    """
+    try:
+        resolved_target = Path(path).resolve(strict=False)
+        roots = [Path(workspace_root).resolve(strict=False)]
+        if extra_authorized_roots:
+            for r in extra_authorized_roots:
+                roots.append(Path(r).resolve(strict=False))
+
+        for root in roots:
+            try:
+                resolved_target.relative_to(root)
+                return True
+            except ValueError:
+                pass
+        return False
+    except (OSError, RuntimeError):
+        return False
 
 # Patterns of sensitive host environment variables to strip
 SENSITIVE_ENV_PATTERNS: tuple[str, ...] = (
@@ -106,10 +151,12 @@ class IsolatedVerificationRunner:
         image: Optional[str] = None,
         runtime: str = "docker",
         timeout: float = DEFAULT_TIMEOUT,
+        workspace_root: Optional[str | Path] = None,
     ) -> None:
         self.image = image or self.DEFAULT_IMAGE
         self.runtime = runtime
         self.timeout = timeout
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self._container_available: Optional[bool] = None
         self._last_container_check: float = 0.0
 
@@ -213,11 +260,15 @@ class IsolatedVerificationRunner:
         raw_cmd: str,
         resolved_cwd: Path,
         allowed_dirs: List[Path],
+        workspace_root: Optional[Path] = None,
+        extra_authorized_roots: Optional[List[Path]] = None,
     ) -> Optional[str]:
         """Scan raw command line before shlex tokenization so backslashes in Windows paths and UNC paths are not consumed on POSIX."""
         import re
         import sys
         import urllib.parse
+
+        ws = workspace_root or resolved_cwd
 
         # 1. Scan for raw UNC paths (e.g. \\server\share or //server/share)
         unc_match = re.search(r'(?:^|[\s"\'=])((\\\\[^\s"\'><|;&]+)|(//[^\s"\'><|;&]+))', raw_cmd)
@@ -260,8 +311,8 @@ class IsolatedVerificationRunner:
                 return f"Security boundary violation: argument '{win_path_tok}' resolves outside authorized workspace via symlink or escape."
             else:
                 try:
-                    cand_p = Path(win_path_tok).resolve()
-                    if not is_path_within_allowed(cand_p, allowed_dirs):
+                    cand_p = Path(win_path_tok).resolve(strict=False)
+                    if not is_path_within_workspace_root(cand_p, ws, extra_authorized_roots) or not is_path_within_allowed(cand_p, allowed_dirs):
                         return f"Security boundary violation: argument '{win_path_tok}' resolves outside authorized workspace via symlink or escape."
                 except Exception:
                     return f"Security boundary violation: argument '{win_path_tok}' resolves outside authorized workspace via symlink or escape."
@@ -280,24 +331,87 @@ class IsolatedVerificationRunner:
         return None
 
     @classmethod
+    def determine_workspace_root(
+        cls,
+        resolved_cwd: Path,
+        workspace_root: Optional[str | Path] = None,
+        allowed_dirs: Optional[Sequence[Path]] = None,
+    ) -> Path:
+        """Determine canonical authorized workspace root for a verification execution.
+
+        Policy:
+        1. If workspace_root is explicitly passed, canonicalize and return it.
+        2. If not passed, search upwards from resolved_cwd for project root markers
+           (.git, pyproject.toml, package.json, Cargo.toml, go.mod, setup.py, pytest.ini).
+           Upward search terminates before crossing system boundaries (system temp directory,
+           user home directory, filesystem root) or outside allowed_dirs.
+        3. If no project marker is found in eligible ancestors, defaults to resolved_cwd.
+        """
+        if workspace_root:
+            return Path(workspace_root).resolve()
+
+        system_boundaries: Set[Path] = set()
+        try:
+            system_boundaries.add(Path(tempfile.gettempdir()).resolve())
+        except Exception:
+            pass
+        try:
+            system_boundaries.add(Path.home().resolve())
+        except Exception:
+            pass
+
+        highest_marker_dir: Optional[Path] = None
+        curr = resolved_cwd
+        while True:
+            # Check for project markers in curr
+            if any((curr / marker).exists() for marker in PROJECT_ROOT_MARKERS):
+                highest_marker_dir = curr
+
+            # Boundary checks: do not climb above system boundaries or filesystem root
+            if curr in system_boundaries or curr == curr.parent:
+                break
+
+            # If allowed_dirs is configured, do not climb outside allowed_dirs
+            if allowed_dirs and not any(is_path_within_allowed(curr.parent, allowed_dirs) for _ in [1]):
+                break
+
+            curr = curr.parent
+
+        if highest_marker_dir is not None:
+            return highest_marker_dir
+
+        return resolved_cwd
+
+    @classmethod
     def check_symlink_and_traversal_escapes(
         cls,
         resolved_cwd: Path,
         tokens: List[str],
         allowed_dirs: List[Path],
+        workspace_root: Optional[Path] = None,
+        extra_authorized_roots: Optional[List[Path]] = None,
     ) -> Optional[str]:
-        """Validate that neither the working directory nor any path in arguments escapes authorized roots via symlinks, traversal, UNC paths, drive roots, or encoded sequences."""
+        """Validate that neither the working directory nor any path in arguments escapes authorized roots
+        via symlinks, traversal, UNC paths, drive roots, or encoded sequences.
+
+        Enforces workspace-level authorization: symlink targets and argument paths must resolve inside
+        the execution's authorized workspace root, NOT merely inside a broader parent allowed directory.
+        """
         import urllib.parse
         import re
         import sys
 
-        # 1. Check if cwd is a UNC path or symlink resolving outside allowed dirs
+        ws_root = workspace_root or cls.determine_workspace_root(resolved_cwd, allowed_dirs=allowed_dirs)
+
+        # 1. Check if cwd is a UNC path or resolves outside workspace / allowed dirs
         cwd_str = str(resolved_cwd)
         if cwd_str.startswith(("\\\\", "//")):
             return f"Security boundary violation: UNC paths prohibited in working directory '{cwd_str}'"
 
         try:
             real_cwd = resolved_cwd.resolve()
+            if not is_path_within_workspace_root(real_cwd, ws_root, extra_authorized_roots):
+                return f"Security boundary violation: working directory '{resolved_cwd}' resolves outside authorized workspace root '{ws_root}'."
             if not is_path_within_allowed(real_cwd, allowed_dirs):
                 return f"Security boundary violation: working directory '{resolved_cwd}' resolves outside authorized roots via symlink."
         except Exception as exc:
@@ -355,32 +469,67 @@ class IsolatedVerificationRunner:
                 ):
                     try:
                         cand_root = Path(decoded_part if re.match(r"^[a-zA-Z]:[/\\]", decoded_part) else f"{decoded_part}\\").resolve()
-                        if not is_path_within_allowed(cand_root, allowed_dirs):
+                        if not is_path_within_workspace_root(cand_root, ws_root, extra_authorized_roots):
                             return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
                     except Exception:
                         return f"Security boundary violation: drive-root escape prohibited in argument '{tok}'"
 
-                # Windows absolute path on POSIX or resolving outside allowed dirs on Windows
+                # Windows absolute path on POSIX or resolving outside workspace on Windows
                 if re.match(r"^[a-zA-Z]:[/\\]", part) or re.match(r"^[a-zA-Z]:[/\\]", decoded_part):
                     if sys.platform != "win32":
                         return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
                     else:
                         try:
-                            cand_p = Path(decoded_part).resolve()
-                            if not is_path_within_allowed(cand_p, allowed_dirs):
+                            cand_p = Path(decoded_part).resolve(strict=False)
+                            if not is_path_within_workspace_root(cand_p, ws_root, extra_authorized_roots):
                                 return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
                         except Exception:
                             return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
 
-                # Symlink check for relative and absolute paths
+                # Symlink check for relative, absolute, nested, or directory symlinks
+                cand_path = Path(decoded_part)
+                if not cand_path.is_absolute():
+                    cand_path = resolved_cwd / cand_path
+
+                # Check if candidate itself is a symlink
                 try:
-                    cand_path = Path(decoded_part)
-                    if not cand_path.is_absolute():
-                        cand_path = resolved_cwd / cand_path
                     if cand_path.is_symlink():
-                        target = cand_path.resolve()
-                        if not is_path_within_allowed(target, allowed_dirs):
+                        try:
+                            raw_target = os.readlink(str(cand_path))
+                            target_path = Path(raw_target)
+                            if not target_path.is_absolute():
+                                target_path = cand_path.parent / target_path
+                            resolved_immediate = target_path.resolve(strict=False)
+                            if not is_path_within_workspace_root(resolved_immediate, ws_root, extra_authorized_roots):
+                                return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
+                        except (OSError, NotImplementedError):
+                            pass
+                        real_target = cand_path.resolve(strict=False)
+                        if not is_path_within_workspace_root(real_target, ws_root, extra_authorized_roots):
                             return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
+                except Exception:
+                    pass
+
+                # Check parent hierarchy for symlink escapes (nested symlink or nonexistent child under symlink directory)
+                try:
+                    curr_parent = cand_path.parent
+                    while curr_parent != curr_parent.parent:
+                        if curr_parent.is_symlink():
+                            try:
+                                raw_target = os.readlink(str(curr_parent))
+                                target_path = Path(raw_target)
+                                if not target_path.is_absolute():
+                                    target_path = curr_parent.parent / target_path
+                                resolved_immediate = target_path.resolve(strict=False)
+                                if not is_path_within_workspace_root(resolved_immediate, ws_root, extra_authorized_roots):
+                                    return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
+                            except (OSError, NotImplementedError):
+                                pass
+                            if not is_path_within_workspace_root(curr_parent.resolve(strict=False), ws_root, extra_authorized_roots):
+                                return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
+                        if curr_parent == resolved_cwd or curr_parent == ws_root:
+                            break
+                        curr_parent = curr_parent.parent
                 except Exception:
                     pass
 
@@ -394,12 +543,11 @@ class IsolatedVerificationRunner:
                 )
                 if is_path_like:
                     try:
-                        candidate = Path(decoded_part)
-                        if not candidate.is_absolute():
-                            candidate = (resolved_cwd / candidate)
-                        real_candidate = candidate.resolve()
-                        if not is_path_within_allowed(real_candidate, allowed_dirs):
+                        real_candidate = cand_path.resolve(strict=False)
+                        if not is_path_within_workspace_root(real_candidate, ws_root, extra_authorized_roots):
                             return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
+                        if not is_path_within_allowed(real_candidate, allowed_dirs):
+                            return f"Security boundary violation: argument '{tok}' resolves outside authorized roots: {allowed_dirs}"
                     except Exception as res_err:
                         return f"Security boundary violation: argument '{tok}' cannot be safely resolved: {res_err}"
 
@@ -411,6 +559,8 @@ class IsolatedVerificationRunner:
         cwd: str,
         timeout: Optional[float] = None,
         trusted_environment: bool = False,
+        workspace_root: Optional[str | Path] = None,
+        extra_authorized_roots: Optional[List[str | Path]] = None,
     ) -> Dict[str, Any]:
         """Execute a verification command safely with container sandboxing or sanitized host execution.
 
@@ -506,6 +656,36 @@ class IsolatedVerificationRunner:
                 "sandbox_mode": "blocked",
             }
 
+        # Determine execution-specific authorized workspace root
+        ws_root = self.determine_workspace_root(
+            resolved_cwd,
+            workspace_root=workspace_root or self.workspace_root,
+            allowed_dirs=allowed_dirs,
+        )
+        extra_roots = [Path(r).resolve() for r in (extra_authorized_roots or [])]
+
+        if not is_path_within_allowed(ws_root, allowed_dirs, safe_by_default=safe_by_default):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: workspace root '{ws_root}' is outside authorized workspace and allowed directories.",
+                "sandbox_mode": "blocked",
+            }
+
+        if not is_path_within_workspace_root(resolved_cwd, ws_root, extra_roots):
+            return {
+                "command": cmd,
+                "passed": False,
+                "status": VerificationOutcome.BLOCKED.value,
+                "exit_code": -1,
+                "duration_seconds": 0.0,
+                "output": f"Security boundary violation: cwd '{resolved_cwd}' is outside authorized workspace root '{ws_root}'.",
+                "sandbox_mode": "blocked",
+            }
+
         if not is_path_within_allowed(resolved_cwd, allowed_dirs, safe_by_default=safe_by_default):
             return {
                 "command": cmd,
@@ -518,7 +698,7 @@ class IsolatedVerificationRunner:
             }
 
         # 3. Scan RAW command line for UNC paths, Windows drive paths, and traversals before shlex consumes backslashes
-        raw_cmd_escape_err = self.scan_raw_command_for_path_escapes(raw_cmd, resolved_cwd, allowed_dirs)
+        raw_cmd_escape_err = self.scan_raw_command_for_path_escapes(raw_cmd, resolved_cwd, allowed_dirs, workspace_root=ws_root, extra_authorized_roots=extra_roots)
         if raw_cmd_escape_err:
             return {
                 "command": cmd,
@@ -593,7 +773,13 @@ class IsolatedVerificationRunner:
             }
 
         # 7. Check token-level path traversal and symlink escapes
-        escape_err = self.check_symlink_and_traversal_escapes(resolved_cwd, tokens, allowed_dirs)
+        escape_err = self.check_symlink_and_traversal_escapes(
+            resolved_cwd,
+            tokens,
+            allowed_dirs,
+            workspace_root=ws_root,
+            extra_authorized_roots=extra_roots,
+        )
         if escape_err:
             return {
                 "command": cmd,
@@ -627,7 +813,7 @@ class IsolatedVerificationRunner:
                 }
             # If container sandbox is available, run inside container (workspace was already validated above)
             try:
-                return self._run_in_container(tokens, resolved_cwd, timeout_sec, t0)
+                return self._run_in_container(tokens, resolved_cwd, timeout_sec, t0, workspace_root=ws_root)
             except Exception as container_err:
                 return {
                     "command": cmd,
@@ -656,7 +842,7 @@ class IsolatedVerificationRunner:
         # 7. Execute within container sandbox if container runtime is available
         if container_available:
             try:
-                return self._run_in_container(tokens, resolved_cwd, timeout_sec, t0)
+                return self._run_in_container(tokens, resolved_cwd, timeout_sec, t0, workspace_root=ws_root)
             except Exception as container_err:
                 logger.warning("Container execution error: %s. Falling back to sanitized host runner.", container_err)
 
@@ -692,10 +878,18 @@ class IsolatedVerificationRunner:
         resolved_cwd: Path,
         timeout_sec: float,
         t0: float,
+        workspace_root: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Spawn disposable container with isolated network, resource caps, and workspace-only rw mount."""
         runtime = shutil.which(self.runtime) or "docker"
-        container_cwd = "/workspace"
+        canonical_workspace = (workspace_root or resolved_cwd).resolve()
+        container_mount = f"{canonical_workspace}:/workspace:rw"
+
+        try:
+            rel_sub = resolved_cwd.relative_to(canonical_workspace).as_posix()
+            container_cwd = f"/workspace/{rel_sub}" if rel_sub and rel_sub != "." else "/workspace"
+        except ValueError:
+            container_cwd = "/workspace"
 
         # Docker run flags enforcing strict isolation
         args = [
@@ -711,7 +905,7 @@ class IsolatedVerificationRunner:
             "--memory", self.DEFAULT_MEM_LIMIT,
             "--cpus", self.DEFAULT_CPUS,
             "--pids-limit", self.DEFAULT_PIDS_LIMIT,
-            "-v", f"{resolved_cwd}:{container_cwd}:rw",
+            "-v", container_mount,
             "-w", container_cwd,
             self.image,
             *tokens,

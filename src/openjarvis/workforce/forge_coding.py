@@ -309,7 +309,11 @@ class ForgeCodingEngine:
             # 4. Run test verification
             if verification_cmd:
                 logger.info("FORGE running verification command: %s", verification_cmd)
-                test_result = self._run_command(verification_cmd, cwd=str(target_workdir))
+                test_result = self._run_command(
+                    verification_cmd,
+                    cwd=str(target_workdir),
+                    workspace_root=target_workdir,
+                )
                 tests_executed.append(test_result)
                 if not test_result.get("passed"):
                     errors.append(f"Verification test failed: {test_result.get('output', '')[:300]}")
@@ -426,26 +430,38 @@ class ForgeCodingEngine:
                 changed.append(rel_path)
         return sorted(changed)
 
-    def _run_command(self, cmd: str, cwd: str, trusted_environment: bool = False) -> Dict[str, Any]:
+    def _run_command(
+        self,
+        cmd: str,
+        cwd: str,
+        trusted_environment: bool = False,
+        workspace_root: Optional[str | Path] = None,
+    ) -> Dict[str, Any]:
         """Run a verification command safely using isolated container sandbox or sanitized host execution.
 
         Enforces:
+        - Workspace-level containment authorization (working directory and symlinks bound to workspace root)
         - Rejection of dangerous shell metacharacters and path traversal
         - Strict symlink escape rejection
         - Disallowance of untrusted arbitrary inline code (python -c, python -m, node -e) without container sandbox
         - Full environment credential scrubbing (zero host secrets accessible to subprocess)
         - Resource caps and execution timeout
         """
-        runner = IsolatedVerificationRunner()
-        return runner.execute_verification_command(cmd, cwd=cwd, trusted_environment=trusted_environment)
+        runner = IsolatedVerificationRunner(workspace_root=workspace_root)
+        return runner.execute_verification_command(
+            cmd,
+            cwd=cwd,
+            trusted_environment=trusted_environment,
+            workspace_root=workspace_root,
+        )
 
     def _auto_verify_tests(self, workdir: Path) -> Optional[Dict[str, Any]]:
         """Attempt best-effort test verification if test files are present."""
         if (workdir / "pytest.ini").exists() or (workdir / "tests").is_dir():
             cmd = "pytest tests/ -q --tb=short"
-            return self._run_command(cmd, cwd=str(workdir))
+            return self._run_command(cmd, cwd=str(workdir), workspace_root=workdir)
         if (workdir / "package.json").exists():
-            return self._run_command("npm test -- --watch=false", cwd=str(workdir))
+            return self._run_command("npm test -- --watch=false", cwd=str(workdir), workspace_root=workdir)
         return None
 
 

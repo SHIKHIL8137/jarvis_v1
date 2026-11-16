@@ -652,3 +652,77 @@ def test_reconcile_missing_both_approval_and_idempotency_keys():
     assert "Insufficient correlation metadata" in res["error"]
 
 
+def test_reconcile_partial_identifier_collision_is_not_matched():
+    """Verify substring collisions (e.g. 'app-1' in 'app-10' or 'app-12') are NOT falsely matched."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+
+    # Item has approval_id: 'app-10', our request searches for 'app-1'
+    item = {
+        "id": "exec-collision-10",
+        "workflowId": "wf-collision",
+        "status": "success",
+        "createdAt": "2026-11-15T12:00:05.000Z",
+        "finished": True,
+        "customData": {"approval_id": "app-10"},
+    }
+
+    with patch.object(client, "_make_request", return_value={"data": [item], "nextCursor": None}):
+        # Querying for app-1 must NOT match app-10!
+        res = client.reconcile_workflow_execution(
+            workflow_id="wf-collision",
+            started_after=1794743990.0,
+            approval_id="app-1",
+        )
+        assert res["reconciled"] is True
+        assert res["found"] is False
+        assert res["status"] == "not_executed"
+
+
+def test_reconcile_partial_idempotency_key_collision_is_not_matched():
+    """Verify substring collisions on idempotency keys (e.g. 'idem-1' in 'idem-100') are NOT falsely matched."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+
+    item = {
+        "id": "exec-collision-idem",
+        "workflowId": "wf-collision",
+        "status": "success",
+        "createdAt": "2026-11-15T12:00:05.000Z",
+        "finished": True,
+        "customData": {"idempotency_key": "idem-100"},
+    }
+
+    with patch.object(client, "_make_request", return_value={"data": [item], "nextCursor": None}):
+        res = client.reconcile_workflow_execution(
+            workflow_id="wf-collision",
+            started_after=1794743990.0,
+            idempotency_key="idem-1",
+        )
+        assert res["reconciled"] is True
+        assert res["found"] is False
+        assert res["status"] == "not_executed"
+
+
+def test_reconcile_malformed_metadata_returns_outcome_unknown():
+    """When execution metadata is malformed / invalid JSON, reconciliation returns outcome_unknown."""
+    client = N8nClient(base_url="https://mock-n8n.local", api_key="test-api-key")
+
+    item = {
+        "id": "exec-malformed",
+        "workflowId": "wf-malformed",
+        "status": "success",
+        "createdAt": "2026-11-15T12:00:05.000Z",
+        "finished": True,
+        "customData": "{malformed json syntax: not a dict",
+    }
+
+    with patch.object(client, "_make_request", return_value={"data": [item], "nextCursor": None}):
+        res = client.reconcile_workflow_execution(
+            workflow_id="wf-malformed",
+            started_after=1794743990.0,
+            approval_id="app-target",
+        )
+        assert res["reconciled"] is False
+        assert res["status"] == "outcome_unknown"
+
+
+

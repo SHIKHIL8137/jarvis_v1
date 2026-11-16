@@ -196,6 +196,80 @@ def _parse_cookie_expiry(set_cookie_header: str) -> float:
     return now + DEFAULT_SESSION_COOKIE_TTL_SECONDS
 
 
+def _extract_execution_correlation_identifiers(
+    item: Dict[str, Any]
+) -> Tuple[Set[str], Set[str], bool]:
+    """Extract exact structured approval_ids and idempotency_keys from execution item.
+
+    Strictly avoids substring matching (e.g. 'app-1' in 'app-10').
+    Returns (approval_ids, idempotency_keys, is_malformed).
+    """
+    approval_ids: Set[str] = set()
+    idempotency_keys: Set[str] = set()
+    is_malformed = False
+
+    # Candidate metadata containers
+    containers = []
+    # Check top-level explicit metadata fields
+    top_meta = {}
+    for k in ("approval_id", "approvalId", "_approval_id", "idempotency_key", "idempotencyKey", "_idempotency_key"):
+        if k in item and item[k] is not None:
+            top_meta[k] = item[k]
+    if top_meta:
+        containers.append(top_meta)
+
+    for k in ("customData", "metadata", "additionalData", "data", "variables"):
+        val = item.get(k)
+        if val is not None:
+            containers.append(val)
+
+    def _inspect_dict(d: Dict[str, Any]) -> None:
+        nonlocal is_malformed
+        for key, val in d.items():
+            if not isinstance(key, str):
+                continue
+            k_norm = key.lower().replace("-", "_").replace(" ", "_")
+            if k_norm in ("approval_id", "approvalid", "_approval_id"):
+                if isinstance(val, (str, int, float)):
+                    s_val = str(val).strip()
+                    if s_val:
+                        approval_ids.add(s_val)
+                elif val is not None:
+                    is_malformed = True
+            elif k_norm in ("idempotency_key", "idempotencykey", "_idempotency_key", "x_idempotency_key"):
+                if isinstance(val, (str, int, float)):
+                    s_val = str(val).strip()
+                    if s_val:
+                        idempotency_keys.add(s_val)
+                elif val is not None:
+                    is_malformed = True
+            elif isinstance(val, dict):
+                _inspect_dict(val)
+
+    for container in containers:
+        if isinstance(container, dict):
+            _inspect_dict(container)
+        elif isinstance(container, str):
+            container_str = container.strip()
+            if container_str.startswith("{") and container_str.endswith("}"):
+                try:
+                    parsed = json.loads(container_str)
+                    if isinstance(parsed, dict):
+                        _inspect_dict(parsed)
+                    else:
+                        is_malformed = True
+                except Exception:
+                    is_malformed = True
+            elif container_str:
+                is_malformed = True
+        elif isinstance(container, list):
+            for elem in container:
+                if isinstance(elem, dict):
+                    _inspect_dict(elem)
+
+    return approval_ids, idempotency_keys, is_malformed
+
+
 class N8nClient:
     """Robust client for n8n API supporting dual authentication (API Key & Session Login)."""
 
@@ -578,20 +652,18 @@ class N8nClient:
         for item in all_items:
             if not isinstance(item, dict):
                 continue
-            item_id = str(item.get("id", ""))
 
             # Require exact workflow ID in execution metadata; do not accept missing workflow identity
             exec_wf_id = str(item.get("workflowId") or item.get("workflowData", {}).get("id") or "")
             if not exec_wf_id or exec_wf_id != clean_id:
                 continue
 
-            custom_data = item.get("customData") or item.get("metadata") or item.get("additionalData") or {}
-            custom_str = json.dumps(custom_data) if isinstance(custom_data, (dict, list)) else str(custom_data)
+            found_approval_ids, found_idempotency_keys, is_malformed = _extract_execution_correlation_identifiers(item)
 
             has_our_key = False
-            if idempotency_key and (idempotency_key in custom_str or item_id == idempotency_key):
+            if idempotency_key and idempotency_key in found_idempotency_keys:
                 has_our_key = True
-            if approval_id and (approval_id in custom_str or item_id == approval_id):
+            if approval_id and approval_id in found_approval_ids:
                 has_our_key = True
 
             exec_time = _parse_timestamp(item.get("startedAt") or item.get("createdAt"))
@@ -604,12 +676,10 @@ class N8nClient:
                 exact_matches.append(item)
             elif time_matches:
                 # Started in our timeframe, but did not match our key
-                # Distinguish if it explicitly has another approval/idempotency key vs missing metadata
-                if (
-                    "approval_id" in custom_str
-                    or "idempotency_key" in custom_str
-                    or "_idempotency_key" in custom_str
-                ):
+                # Distinguish if it explicitly has another approval/idempotency key vs missing metadata or malformed metadata
+                if is_malformed:
+                    ambiguous_newer.append(item)
+                elif found_approval_ids or found_idempotency_keys:
                     other_approval_matches.append(item)
                 else:
                     ambiguous_newer.append(item)

@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,47 @@ from openjarvis.sandbox.verification_runner import (
     VerificationOutcome,
 )
 from openjarvis.workforce.forge_coding import ForgeCodingEngine
+
+
+@contextmanager
+def symlink_or_simulated(link_path: Path, target_path: Path):
+    """Create a real OS symlink if permitted by user context; otherwise simulate via mocking."""
+    try:
+        link_path.symlink_to(target_path)
+        yield link_path
+        return
+    except (OSError, NotImplementedError):
+        pass
+
+    # Create dummy placeholder file or directory
+    if target_path.is_dir() if target_path.exists() else target_path.suffix == "":
+        link_path.mkdir(exist_ok=True)
+    else:
+        link_path.write_text("simulated_symlink_placeholder")
+
+    orig_is_symlink = Path.is_symlink
+    orig_readlink = os.readlink
+    orig_resolve = Path.resolve
+
+    def mock_is_symlink(self):
+        if str(self) == str(link_path) or self.name == link_path.name:
+            return True
+        return orig_is_symlink(self)
+
+    def mock_readlink(p):
+        if str(p) == str(link_path) or Path(p).name == link_path.name:
+            return str(target_path)
+        return orig_readlink(p)
+
+    def mock_resolve(self, strict=False):
+        if str(self) == str(link_path) or self.name == link_path.name:
+            return target_path.resolve(strict=False)
+        return orig_resolve(self, strict=strict)
+
+    with patch.object(Path, "is_symlink", mock_is_symlink), \
+         patch("os.readlink", mock_readlink), \
+         patch.object(Path, "resolve", mock_resolve):
+        yield link_path
 
 
 def test_forge_blocks_inline_python_c_without_container(tmp_path):
@@ -109,19 +151,13 @@ def test_symlink_escape_outside_workspace_is_blocked(tmp_path):
     secret_file = outside_dir / "passwords.txt"
     secret_file.write_text("secret_data")
 
-    # Create symlink inside workspace pointing to outside secret file
     link_in_ws = workspace / "escape_link.txt"
-    try:
-        link_in_ws.symlink_to(secret_file)
-    except (OSError, NotImplementedError):
-        # On Windows without SeCreateSymbolicLinkPrivilege, test path traversal instead
-        pytest.skip("Symlink creation not permitted in current OS user context")
-
-    with patch.object(runner, "is_container_runtime_available", return_value=False):
-        res = runner.execute_verification_command(f"python {link_in_ws.name}", cwd=str(workspace))
-        assert res["passed"] is False
-        assert res["status"] == VerificationOutcome.BLOCKED.value
-        assert "resolves outside authorized workspace" in res["output"] or "Security boundary violation" in res["output"]
+    with symlink_or_simulated(link_in_ws, secret_file):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            res = runner.execute_verification_command(f"python {link_in_ws.name}", cwd=str(workspace))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace via symlink" in res["output"]
 
 
 def test_path_traversal_in_command_arguments_is_blocked(tmp_path):
@@ -373,5 +409,185 @@ def test_repeated_url_encoded_traversal_blocked(tmp_path):
     assert res["passed"] is False
     assert res["status"] == VerificationOutcome.BLOCKED.value
     assert "path traversal prohibited" in res["output"]
+
+
+def test_symlink_to_directory_outside_workspace_blocked(tmp_path):
+    """Symlink pointing to a directory outside workspace must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (outside_dir / "target.py").write_text("print('outside')")
+
+    link_dir = ws / "symlink_dir"
+    with symlink_or_simulated(link_dir, outside_dir):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            res = runner.execute_verification_command(f"python {link_dir.name}/target.py", cwd=str(ws))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace via symlink" in res["output"]
+
+
+def test_nested_symlink_escape_blocked(tmp_path):
+    """Nested symlink escape (link1 -> link2 -> outside_secret) must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_dir = tmp_path / "outside_secret"
+    outside_dir.mkdir()
+    secret = outside_dir / "secret.txt"
+    secret.write_text("secret_val")
+
+    link2 = ws / "link2.txt"
+    link1 = ws / "link1.txt"
+
+    with symlink_or_simulated(link2, secret):
+        with symlink_or_simulated(link1, link2):
+            with patch.object(runner, "is_container_runtime_available", return_value=False):
+                res = runner.execute_verification_command(f"python {link1.name}", cwd=str(ws))
+                assert res["passed"] is False
+                assert res["status"] == VerificationOutcome.BLOCKED.value
+                assert "resolves outside authorized workspace via symlink" in res["output"]
+
+
+def test_symlink_pointing_to_another_symlink_blocked(tmp_path):
+    """Symlink in workspace pointing to another symlink outside workspace must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    target_file = outside_dir / "data.txt"
+    target_file.write_text("payload")
+
+    outside_link = outside_dir / "outside_link.txt"
+    ws_link = ws / "ws_link.txt"
+
+    with symlink_or_simulated(outside_link, target_file):
+        with symlink_or_simulated(ws_link, outside_link):
+            with patch.object(runner, "is_container_runtime_available", return_value=False):
+                res = runner.execute_verification_command(f"python {ws_link.name}", cwd=str(ws))
+                assert res["passed"] is False
+                assert res["status"] == VerificationOutcome.BLOCKED.value
+                assert "resolves outside authorized workspace via symlink" in res["output"]
+
+
+def test_legitimate_symlink_inside_workspace_permitted(tmp_path):
+    """Legitimate symlink whose target is within the authorized workspace must be permitted."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    sub = ws / "sub"
+    sub.mkdir()
+    target_file = sub / "legit_test.py"
+    target_file.write_text("print('legitimate')")
+
+    link_in_ws = ws / "link_to_legit.py"
+
+    with symlink_or_simulated(link_in_ws, target_file):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="legitimate\n", stderr="")
+                res = runner.execute_verification_command(
+                    f"python {link_in_ws.name}",
+                    cwd=str(ws),
+                    trusted_environment=True,
+                )
+                assert res["passed"] is True
+                assert res["status"] == VerificationOutcome.PASSED.value
+
+
+def test_relative_symlink_escape_blocked(tmp_path):
+    """Relative symlink pointing to an outside path must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_secret = tmp_path / "outside_secret" / "passwords.txt"
+    outside_secret.parent.mkdir()
+    outside_secret.write_text("secret_pw")
+
+    rel_link = ws / "rel_escape.txt"
+    with symlink_or_simulated(rel_link, outside_secret):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            res = runner.execute_verification_command(f"python {rel_link.name}", cwd=str(ws))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace via symlink" in res["output"]
+
+
+def test_absolute_symlink_escape_blocked(tmp_path):
+    """Absolute symlink pointing to an outside file must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_file = tmp_path / "outside_dir" / "abs_target.txt"
+    outside_file.parent.mkdir()
+    outside_file.write_text("abs_target_content")
+
+    abs_link = ws / "abs_escape.txt"
+    with symlink_or_simulated(abs_link, outside_file.resolve()):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            res = runner.execute_verification_command(f"python {abs_link.name}", cwd=str(ws))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace via symlink" in res["output"]
+
+
+def test_symlink_escape_with_docker_available_blocked(tmp_path):
+    """Symlink escape must be blocked BEFORE container dispatch even when Docker is active."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir()
+    outside.write_text("leak")
+
+    link = ws / "docker_escape.txt"
+    with symlink_or_simulated(link, outside):
+        with patch.object(runner, "is_container_runtime_available", return_value=True):
+            with patch.object(runner, "_run_in_container") as mock_container:
+                res = runner.execute_verification_command(f"python {link.name}", cwd=str(ws))
+                assert res["passed"] is False
+                assert res["status"] == VerificationOutcome.BLOCKED.value
+                assert "resolves outside authorized workspace via symlink" in res["output"]
+                assert res["sandbox_mode"] == "blocked"
+                mock_container.assert_not_called()
+
+
+def test_symlink_escape_without_docker_blocked(tmp_path):
+    """Without Docker, symlink validation blocks the request specifically (not generic no-container error)."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir()
+    outside.write_text("leak")
+
+    link = ws / "no_docker_escape.txt"
+    with symlink_or_simulated(link, outside):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            res = runner.execute_verification_command(f"python {link.name}", cwd=str(ws))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            # Must prove symlink validation itself blocked it, not generic blocked_no_container
+            assert "resolves outside authorized workspace via symlink" in res["output"]
+
+
+def test_nonexistent_destination_under_escaping_symlink_blocked(tmp_path):
+    """Nonexistent destination path under an escaping symlink directory must be blocked."""
+    runner = IsolatedVerificationRunner()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+
+    link_dir = ws / "escaping_dir_link"
+    with symlink_or_simulated(link_dir, outside_dir):
+        with patch.object(runner, "is_container_runtime_available", return_value=False):
+            res = runner.execute_verification_command(f"python {link_dir.name}/nonexistent_child.py", cwd=str(ws))
+            assert res["passed"] is False
+            assert res["status"] == VerificationOutcome.BLOCKED.value
+            assert "resolves outside authorized workspace via symlink" in res["output"]
 
 

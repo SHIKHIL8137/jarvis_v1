@@ -1,5 +1,34 @@
 # Jarvis V1 Integration & Upgrade Changelog
 
+## Version 10: Final Sandbox Workspace Authorization, Symlink Escape Containment & Exact n8n Correlation
+**Date:** 2026-11-15  
+**Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  
+
+### Key Highlights:
+1. **P0 — FORGE Explicit Two-Tier Workspace Authorization & Symlink Containment (`src/openjarvis/sandbox/verification_runner.py` & `src/openjarvis/workforce/forge_coding.py`)**:
+   - **Root Cause Eliminated:** Addressed the root cause where administrative allowed directories (`allowed_dirs`, including system temp directory) were conflated with the execution-specific authorized workspace (`workspace_root`). Previously, a symlink pointing to an outside file that resided inside system tempdir (e.g. `tmp_path / "outside_secret"`) was falsely accepted.
+   - **Two-Tier Security Boundary:**
+     - *Tier 1: Administrative Allowed Directories (`allowed_dirs`):* System-wide boundaries (user config, project root, temp dir). The workspace root itself MUST reside within `allowed_dirs`.
+     - *Tier 2: Execution-Specific Workspace (`workspace_root`):* The specific directory authorized for an execution task. Symlink targets and arguments must strictly reside within `workspace_root`.
+   - **Workspace Root Determination (`determine_workspace_root`):** Explicitly resolves `workspace_root` if passed; if omitted, searches upward from `resolved_cwd` for project root markers (`.git`, `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`, `setup.py`, `pytest.ini`), stopping before crossing system boundaries or escaping `allowed_dirs`. Defaults to `resolved_cwd` if no marker is found.
+   - **All 10 Symlink Vectors Hardened & Verified:** Verified outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative symlink, absolute symlink, with Docker, without Docker, and nonexistent destination under escaping symlink directory. All 27 tests in `test_forge_sandboxing_p0.py` pass (0 skipped, 0 failed).
+   - **Container Mount Isolation:** Docker/Podman container mounts use only the canonical authorized workspace path (`-v {canonical_workspace_root}:/workspace:rw`) with working directory set to `-w /workspace/{relative_subpath}`.
+
+2. **P0 — n8n Exact Structured Correlation & Substring Matching Elimination (`src/openjarvis/tools/n8n.py`)**:
+   - **Root Cause Eliminated:** Replaced substring matching (`approval_id in custom_str` and `idempotency_key in custom_str`) with exact structured metadata parsing via `_extract_execution_correlation_identifiers`.
+   - **Partial Identifier Collision Rejection:** Verified that partial substring matches (such as `approval_id="app-1"` matching `app-10` or `idempotency_key="idem-1"` matching `idem-100`) are strictly rejected.
+   - **Malformed Metadata Handling:** Execution records with malformed metadata or invalid JSON in `customData` return `status="outcome_unknown"`, preventing unintended auto-retries or false claims.
+   - **Top-Level ID Separation:** Removed top-level execution ID from `idempotency_keys` set, preventing unrelated executions from falsely matching approvals.
+   - All 28 tests in `test_n8n_ambiguous_outcomes_p0.py` pass.
+
+3. **Complete Regression Matrix:**
+   - 18 Targeted Backend Test Files: **152 passed, 0 skipped, 0 failed** in 27.28s (100% pass rate).
+   - Frontend Vitest Suite: **148 passed across 24 test files** in 3.09s (100% pass rate).
+   - Frontend TypeScript Build (`tsc -b`): Clean exit with code 0 (zero errors).
+   - Frontend Production Build (`npm run build`): 3,506 modules compiled in 2.16s with zero errors.
+
+---
+
 ## Version 9: Final Defect Repair, Cross-Platform Path Normalization & Regression Pass
 **Date:** 2026-11-15  
 **Architect:** Principal Software Engineer, AI Systems Architect & Security Engineer  
