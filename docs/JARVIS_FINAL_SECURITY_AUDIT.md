@@ -113,15 +113,15 @@ Pre-Transmission     Ambiguous     200 OK           4xx / 5xx
 
 | Test Suite | Focus Area | Tests | Status |
 |---|---|---|---|
-| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; two-tier workspace validation; symlink containment within workspace root; outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative/absolute symlink, with/without Docker, nonexistent destination under escaping symlink; raw command path escape scan; UNC, traversal, drive root escapes; host secrets scrubbed; container isolation flags | 27 | 27 PASSED (0 skipped, 0 failed) |
+| `tests/workforce/test_forge_sandboxing_p0.py` | Inline `python -c`, `node -e`, `python -m` blocked; two-tier workspace validation; symlink containment within workspace root; outside file in allowed parent, outside directory, nested symlink, symlink to symlink, legitimate symlink in workspace, relative/absolute symlink, with/without Docker, nonexistent destination under escaping symlink; symlink loops (`RuntimeError`); Windows junctions & reparse points; broken symlinks; permission-denied fail-closed resolution; multiple authorized workspaces (`extra_authorized_roots`); raw command path escape scan; UNC, traversal, drive root escapes; host secrets scrubbed; container isolation flags | 34 | 34 PASSED (0 skipped, 0 failed) |
 | `tests/workforce/test_forge_command_security.py` | Allowlist enforcement, dangerous shell operators, path traversal, real subprocess execution | 5 | 5 PASSED |
 | `tests/workforce/test_forge_security_p0.py` | Cross-process workspace locking, dirty git snapshot containment, verification states | 7 | 7 PASSED |
 | `tests/workforce/test_forge_coding_integration.py` | OpenCode integration, GoalLoop verification, task dispatch | 3 | 3 PASSED |
-| `tests/tools/test_n8n_ambiguous_outcomes_p0.py` | `outcome_unknown` state, timestamp fallback removal, exact approval & idempotency matching, elimination of substring matching, partial identifier collisions (`app-1` vs `app-10`, `idem-1` vs `idem-100`), malformed metadata, pagination truncation handling, empty result vs nextCursor, duplicate retry prevention | 28 | 28 PASSED |
+| `tests/tools/test_n8n_ambiguous_outcomes_p0.py` | `outcome_unknown` state, timestamp fallback removal, exact approval & idempotency matching, elimination of substring matching, partial identifier collisions (`app-1` vs `app-10`, `idem-1` vs `idem-100`), malformed metadata, pagination truncation handling, repeated/stalled cursor handling, empty result vs nextCursor, duplicate retry prevention | 29 | 29 PASSED |
 | `tests/tools/test_n8n_concurrency.py` | 10-thread simultaneous claim race, atomic test-and-set conditional updates | 3 | 3 PASSED |
 | `tests/tools/test_n8n_security_p0.py` | SSRF rejection, path traversal, canonical payload hash binding, self-approval denial | 11 | 11 PASSED |
-| `tests/tools/test_n8n_integration.py` | Live/mocked n8n client authentication, session cookie caching, and workflow dispatch | 1 | 1 PASSED |
-| `tests/tools/test_allowed_dirs_config.py` | System allowed directories configuration, path boundary enforcement | 7 | 7 PASSED |
+| `tests/tools/test_n8n_integration.py` | Live/mocked n8n client authentication, session cookie caching, and workflow dispatch | 5 | 5 PASSED |
+| `tests/tools/test_allowed_dirs_config.py` | System allowed directories configuration, path boundary enforcement | 28 | 27 PASSED, 1 SKIPPED (Unprivileged Windows symlink privilege check) |
 | `tests/models/test_model_discovery.py` | Deterministic mocked discovery, REST fallback probes, unreachable providers, 401 & 403 auth errors, empty catalogs, 429 rate limits, 404 endpoint not found, unconfigured environments | 15 | 15 PASSED |
 | `tests/models/test_model_capability_policy.py` | DeepSeek R1 non-tool enforcement, confidence policies (`CONFIRMED_ONLY`, `DECLARED_OR_CONFIRMED`), Anthropic discovery | 5 | 5 PASSED |
 | `tests/models/test_model_selection_p0.py` | No emergency hardcoded fallbacks, fail-closed privacy, task normalization | 10 | 10 PASSED |
@@ -132,11 +132,11 @@ Pre-Transmission     Ambiguous     200 OK           4xx / 5xx
 | `tests/workforce/test_workforce_routes.py` | Workforce FastAPI router endpoints, agent listing, task delegation | 4 | 4 PASSED |
 | `tests/workforce/test_workforce_security.py` | Workforce security boundaries, role permissions | 5 | 5 PASSED |
 | `tests/workforce/test_workforce_e2e.py` | Full multi-agent workforce ERP audit DAG with deterministic fixtures | 1 | 1 PASSED |
-| **Comprehensive 18-File Suite** | **Workforce, models, tools, sandbox, connectors full regression** | **152** | **152 PASSED (0 skipped, 0 failed)** |
+| **Comprehensive Targeted Suite (19 Files)** | **Workforce, models, tools, sandbox, connectors full regression** | **182** | **181 PASSED, 1 SKIPPED, 0 FAILED** in 34.71s |
 | `frontend/src/components/Chat/VoiceMode.test.tsx` | VoiceMode actual speech synthesis invocations (`window.speechSynthesis.speak`), DOM emoji retention, all 11 conditions (flags, ZWJ, skin tones, keycaps, streaming, barge-in) | 15 | 15 PASSED |
-| Full Frontend Vitest Suite | Store, API, Auth, Telemetry, Capabilities, UI modals, VoiceMode, TTS | 148 passed (24 files) | 148 PASSED (0 failed) |
-| Production Frontend Build | Vite v8.3.4 static compilation & PWA generation | 3,506 modules | SUCCESS (0 errors) |
-| Repository-Wide Test Suite | Comprehensive 9,726 tests across all historical and current modules | 9,726 | 9,390 PASSED, 194 SKIPPED (128 Linux-only legacy OS checks failed on Windows) |
+| Full Frontend Vitest Suite | Store, API, Auth, Telemetry, Capabilities, UI modals, VoiceMode, TTS | 148 passed (24 files) | 148 PASSED (0 failed) in 4.89s |
+| Production Frontend Build | Vite v8.3.4 static compilation & PWA generation (`tsc -b && vite build`) | 3,506 modules | SUCCESS (0 errors) in 2.01s |
+| Repository-Wide Test Suite | Comprehensive 9,726 tests across all historical and current modules | 9,726 | 9,390 PASSED, 194 SKIPPED, 128 FAILED, 14 ERRORS in 3,111.01s (51m 51s) |
 
 ---
 

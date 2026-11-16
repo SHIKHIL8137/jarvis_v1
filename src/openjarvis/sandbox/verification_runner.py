@@ -67,6 +67,19 @@ PROJECT_ROOT_MARKERS: frozenset[str] = frozenset({
 })
 
 
+def is_link_or_reparse(path: Path | str) -> bool:
+    """Check if path is a symbolic link or Windows junction / reparse point."""
+    try:
+        p = Path(path)
+        if p.is_symlink():
+            return True
+        if hasattr(os.path, "isjunction") and os.path.isjunction(str(p)):
+            return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
 def is_path_within_workspace_root(
     path: Path | str,
     workspace_root: Path | str,
@@ -79,15 +92,23 @@ def is_path_within_workspace_root(
     Being within a broader allowed parent directory (e.g. system tempdir) is NOT sufficient.
     """
     try:
-        resolved_target = Path(path).resolve(strict=False)
-        roots = [Path(workspace_root).resolve(strict=False)]
+        import re
+
+        # Strip Windows NT prefixes like \\?\ and \??\ so relative_to works uniformly
+        target_str = re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", str(path))
+        resolved_target = Path(target_str).resolve(strict=False)
+        target_norm = Path(re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", str(resolved_target)))
+
+        ws_str = re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", str(workspace_root))
+        roots = [Path(re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", str(Path(ws_str).resolve(strict=False))))]
         if extra_authorized_roots:
             for r in extra_authorized_roots:
-                roots.append(Path(r).resolve(strict=False))
+                r_str = re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", str(r))
+                roots.append(Path(re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", str(Path(r_str).resolve(strict=False)))))
 
         for root in roots:
             try:
-                resolved_target.relative_to(root)
+                target_norm.relative_to(root)
                 return True
             except ValueError:
                 pass
@@ -486,17 +507,18 @@ class IsolatedVerificationRunner:
                         except Exception:
                             return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink or escape."
 
-                # Symlink check for relative, absolute, nested, or directory symlinks
+                # Symlink and Windows junction/reparse point check
                 cand_path = Path(decoded_part)
                 if not cand_path.is_absolute():
                     cand_path = resolved_cwd / cand_path
 
-                # Check if candidate itself is a symlink
+                # Check if candidate itself is a symlink or junction
                 try:
-                    if cand_path.is_symlink():
+                    if is_link_or_reparse(cand_path):
                         try:
                             raw_target = os.readlink(str(cand_path))
-                            target_path = Path(raw_target)
+                            raw_target_clean = re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", raw_target)
+                            target_path = Path(raw_target_clean)
                             if not target_path.is_absolute():
                                 target_path = cand_path.parent / target_path
                             resolved_immediate = target_path.resolve(strict=False)
@@ -507,17 +529,18 @@ class IsolatedVerificationRunner:
                         real_target = cand_path.resolve(strict=False)
                         if not is_path_within_workspace_root(real_target, ws_root, extra_authorized_roots):
                             return f"Security boundary violation: argument '{tok}' resolves outside authorized workspace via symlink."
-                except Exception:
-                    pass
+                except (RuntimeError, OSError, PermissionError) as sym_err:
+                    return f"Security boundary violation: argument '{tok}' cannot be safely validated: {sym_err}"
 
                 # Check parent hierarchy for symlink escapes (nested symlink or nonexistent child under symlink directory)
                 try:
                     curr_parent = cand_path.parent
                     while curr_parent != curr_parent.parent:
-                        if curr_parent.is_symlink():
+                        if is_link_or_reparse(curr_parent):
                             try:
                                 raw_target = os.readlink(str(curr_parent))
-                                target_path = Path(raw_target)
+                                raw_target_clean = re.sub(r"^(?:\\\?\?\\|\\\\\?\\)", "", raw_target)
+                                target_path = Path(raw_target_clean)
                                 if not target_path.is_absolute():
                                     target_path = curr_parent.parent / target_path
                                 resolved_immediate = target_path.resolve(strict=False)
@@ -530,8 +553,8 @@ class IsolatedVerificationRunner:
                         if curr_parent == resolved_cwd or curr_parent == ws_root:
                             break
                         curr_parent = curr_parent.parent
-                except Exception:
-                    pass
+                except (RuntimeError, OSError, PermissionError) as parent_err:
+                    return f"Security boundary violation: argument '{tok}' parent path cannot be safely validated: {parent_err}"
 
                 # Resolution check for any path-like argument, filename, or nonexistent path
                 is_path_like = (
@@ -540,6 +563,7 @@ class IsolatedVerificationRunner:
                     or "/" in part
                     or "\\" in part
                     or (resolved_cwd / decoded_part).exists()
+                    or is_link_or_reparse(resolved_cwd / decoded_part)
                 )
                 if is_path_like:
                     try:

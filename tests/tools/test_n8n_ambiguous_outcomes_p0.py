@@ -725,4 +725,31 @@ def test_reconcile_malformed_metadata_returns_outcome_unknown():
         assert res["status"] == "outcome_unknown"
 
 
+def test_reconcile_repeated_cursor_returns_outcome_unknown():
+    """When API returns a repeated/stalled cursor (nextCursor == cursor), reconciliation truncates and returns outcome_unknown."""
+    client = N8nClient(base_url="https://n8n.example.com", api_key="test-key")
+
+    with patch.object(
+        client,
+        "_make_request",
+        return_value={"data": [], "nextCursor": "stalled-cursor-1"},
+    ):
+        # First call has cursor=None, returns stalled-cursor-1.
+        # Next call has cursor=stalled-cursor-1, returns stalled-cursor-1 again -> stalled!
+        def mock_request(endpoint, method="GET", json=None):
+            return {"data": [], "nextCursor": "stalled-cursor-1"}
+
+        with patch.object(client, "_make_request", side_effect=mock_request):
+            res = client.reconcile_workflow_execution(
+                workflow_id="wf-1",
+                started_after=100.0,
+                approval_id="app-1",
+                idempotency_key="idem-1",
+            )
+            assert res["reconciled"] is False
+            assert res["found"] is False
+            assert res["status"] == "outcome_unknown"
+            assert "truncated" in res["error"].lower()
+
+
 
