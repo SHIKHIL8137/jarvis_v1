@@ -52,11 +52,26 @@ from tests.agents.fake_engine import FakeEngine
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_1_provider_configuration_loads_correctly() -> None:
-    cfg = load_config()
+def test_scenario_1_provider_configuration_loads_correctly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Use isolated temporary configuration path to eliminate dependence on host machine config
+    fake_config_file = tmp_path / "config.toml"
+    fake_config_file.write_text(
+        """
+[engine]
+default = "ollama"
+
+[engine.ollama]
+host = "http://127.0.0.1:11434"
+model = "qwen3:4b-instruct"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(fake_config_file))
+    cfg = load_config(fake_config_file)
     assert hasattr(cfg, "engine")
     assert hasattr(cfg.engine, "ollama")
     assert hasattr(cfg.engine.ollama, "host")
+    assert cfg.engine.ollama.host == "http://127.0.0.1:11434"
     assert cfg.engine.default in ("ollama", "vllm", "cloud", "nim", "litellm")
 
 

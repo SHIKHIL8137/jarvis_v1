@@ -95,9 +95,25 @@ Executed live test query to `http://127.0.0.1:11434/api/generate`:
 ## 5. Paid Model Protection & Remediation (DEF-01)
 
 ### Remediation Details
-- **Location:** `src/openjarvis/models/selector.py`
-- **Fix:** In `ModelSelectionEngine.select_model()`, the default value of `effective_allow_paid` is now strictly `self.allow_paid_models` (False). Setting `ModelPolicy.CLOUD_FIRST` routes only to free cloud models (OpenRouter `:free` or free tiers) and does NOT enable paid models unless the caller explicitly sets `allow_paid=True`.
-- **Regression Test:** `tests/models/test_free_model_routing.py::test_scenario_10_paid_provider_cannot_be_used_unless_explicitly_enabled` (13/13 tests passed).
+- **Locations:** `src/openjarvis/models/selector.py` (`select_model()`, `handle_model_failure()`)
+- **Fix:** 
+  1. In `ModelSelectionEngine.select_model()`, the default value of `effective_allow_paid` is now strictly `self.allow_paid_models` (False). Setting `ModelPolicy.CLOUD_FIRST` routes only to free cloud models (OpenRouter `:free` or free tiers) and does NOT enable paid models unless the caller explicitly sets `allow_paid=True`.
+  2. In `ModelSelectionEngine.handle_model_failure()`, removed the legacy leak `elif self.policy == ModelPolicy.CLOUD_FIRST: effective_allow_paid = True`. The fallback recovery pipeline preserves original paid authorization (`effective_allow_paid = self.allow_paid_models` or caller context) and invokes `self._filter_candidates()` to verify zero-cost and capability constraints across all candidates.
+  3. Automatic retries, background tasks, and agent-level invocations strictly preserve zero-cost restrictions. Paid models are never silently activated.
+- **Regression & Fallback Security Tests:**
+  - `tests/models/test_paid_model_fallback_security.py` (10/10 scenarios PASSED in 1.28s):
+    - Scenario 1: `test_scenario_1_cloud_first_free_model_failure_with_paid_alternative` (Asserts zero paid fallback; routes to alternative free model)
+    - Scenario 2: `test_scenario_2_cloud_first_with_only_paid_fallback_models` (Asserts `NoCompatibleModelAvailable` raised when only paid models remain)
+    - Scenario 3: `test_scenario_3_balanced_policy_with_paid_models_disabled` (Asserts paid models blocked under balanced policy)
+    - Scenario 4: `test_scenario_4_explicit_paid_authorization` (Asserts paid models unlocked ONLY when explicitly authorized)
+    - Scenario 5: `test_scenario_5_local_only_fallback` (Asserts strict local-only containment)
+    - Scenario 6: `test_scenario_6_agent_level_fallback` (Asserts agent-level fallback obeys zero-cost restrictions)
+    - Scenario 7: `test_scenario_7_background_task_retry` (Asserts background retries never silently switch to paid providers)
+    - Scenario 8: `test_scenario_8_provider_outage_and_rate_limit_fallback` (Asserts rate limit backoff chooses alternative free models)
+    - Scenario 9: `test_scenario_9_multiple_consecutive_model_failures` (Asserts multiple consecutive failures maintain zero-cost gate)
+    - Scenario 10: `test_scenario_10_model_switching_after_task_already_started` (Asserts mid-task model switches preserve policy)
+  - `tests/models/test_free_model_routing.py::test_scenario_10_paid_provider_cannot_be_used_unless_explicitly_enabled` (13/13 suite tests passed).
+  - All 57 model tests across 6 files passed.
 
 ---
 

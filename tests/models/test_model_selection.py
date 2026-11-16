@@ -74,6 +74,19 @@ def sample_catalog():
             context_length=128000,
             price_per_m_out=0.6,
         ),
+        # Cloud free model
+        ModelCapabilityInfo(
+            model_id="qwen-2.5-coder:free",
+            provider="openrouter",
+            display_name="Qwen 2.5 Coder Free",
+            is_local=False,
+            is_free=True,
+            supports_tools=True,
+            supports_structured_output=True,
+            supports_coding=True,
+            context_length=65536,
+            price_per_m_out=0.0,
+        ),
     ]
 
 
@@ -119,9 +132,10 @@ def test_selection_cloud_first(sample_catalog):
         default_policy=ModelPolicy.CLOUD_FIRST,
     )
 
+    # Cloud-first selects free cloud model
     res = selector.select_model(task_type="coding", agent_id="forge")
     assert res.is_local is False
-    assert res.model_name in ("claude-3-5-sonnet", "gpt-4o-mini")
+    assert res.model_id == "qwen-2.5-coder:free"
 
 
 def test_selection_failure_fallback_and_penalty(sample_catalog):

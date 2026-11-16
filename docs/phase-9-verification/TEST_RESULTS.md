@@ -19,24 +19,42 @@ All 231 targeted backend verification tests, 148 frontend unit/component tests, 
 
 | Test Domain | Suites | Total Tests | Passed | Failed | Skipped | Total Runtime |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Model Selection & Routing** | 1 | 13 | 13 | 0 | 0 | 1.84s |
-| **Specialist Workforce** | 1 | 11 | 11 | 0 | 0 | 6.39s |
-| **Voice, Acoustic & Language**| 1 | 9 | 9 | 0 | 0 | 0.82s |
-| **Playwright Browser Tab Reuse**| 1 | 10 | 10 | 0 | 0 | 26.28s |
-| **Sandbox & Path Validation** | 19 | 188 | 188 | 0 | 0 | 29.50s |
-| **Frontend Web Interface** | 24 files | 148 | 148 | 0 | 0 | 2.50s |
-| **Frontend Production Build** | Vite/Rollup | 1 | 1 | 0 | 0 | 1.39s |
+| **Model Selection, Fallback & Routing** | 6 files | 57 | 57 | 0 | 0 | 12.20s |
+| **Browser Control & Real Chrome** | 4 files | 40 | 40 | 0 | 0 | 84.19s |
+| **Specialist Workforce & Agent Runtime** | 2 files | 23 | 23 | 0 | 0 | 4.95s |
+| **Durable Autonomy & Task Store** | 2 files | 17 | 17 | 0 | 0 | 5.68s |
+| **Voice, Acoustic Echo & Language** | 1 file | 9 | 9 | 0 | 0 | 2.41s |
+| **Security & Sandbox Isolation** | 3 files | 28 | 22 | 0 | 6 (POSIX) | 4.59s |
+| **Path Verification & Sandbox Targets** | 19 files | 188 | 188 | 0 | 0 | 29.50s |
+| **Frontend Web Interface** | 24 files | 148 | 148 | 0 | 0 | 2.21s |
+| **Frontend Production Build** | Vite/Rollup | 1 | 1 | 0 | 0 | 1.28s |
 | **Live Local AI Inference** | Live Ollama | 1 | 1 | 0 | 0 | 1.15s |
-| **TOTAL VERIFIED** | **49 files** | **381** | **381** | **0** | **0** | **~69.87s** |
+| **TOTAL VERIFIED** | **63 files** | **512** | **506** | **0** | **6** | **~148.16s** |
 
 ---
 
 ## 3. Targeted Backend Verification Suites
 
-### Suite 1: Free Model Routing & Provider Governance
+### Suite 1: Paid Model Fallback Security (P0 Verification)
+- **File:** `tests/models/test_paid_model_fallback_security.py`
+- **Command:** `pytest tests/models/test_paid_model_fallback_security.py -v`
+- **Result:** 10/10 PASSED (1.28s)
+- **Scenarios Verified:**
+  1. `test_scenario_1_cloud_first_free_model_failure_with_paid_alternative`: PASS (Routes strictly to free cloud alternative)
+  2. `test_scenario_2_cloud_first_with_only_paid_fallback_models`: PASS (Raises `NoCompatibleModelAvailable`; zero paid invocation)
+  3. `test_scenario_3_balanced_policy_with_paid_models_disabled`: PASS (Zero paid leakage under balanced policy)
+  4. `test_scenario_4_explicit_paid_authorization`: PASS (Paid model unlocked ONLY when explicitly authorized)
+  5. `test_scenario_5_local_only_fallback`: PASS (Strict local boundary preserved during failure recovery)
+  6. `test_scenario_6_agent_level_fallback`: PASS (Agent delegations inherit parent zero-cost gate)
+  7. `test_scenario_7_background_task_retry`: PASS (Background task retries maintain zero-cost restrictions)
+  8. `test_scenario_8_provider_outage_and_rate_limit_fallback`: PASS (Provider rate limit backoff selects alternative free model)
+  9. `test_scenario_9_multiple_consecutive_model_failures`: PASS (Multi-model failure chain safely pauses without paid fallback)
+  10. `test_scenario_10_model_switching_after_task_already_started`: PASS (Mid-task switches enforce initial cost policy)
+
+### Suite 2: Free Model Routing & Provider Governance
 - **File:** `tests/models/test_free_model_routing.py`
 - **Command:** `pytest tests/models/test_free_model_routing.py -v`
-- **Result:** 13/13 PASSED (1.84s)
+- **Result:** 13/13 PASSED (4.17s)
 - **Key Verifications:**
   - `test_scenario_1_provider_configuration_loads_correctly`: PASS
   - `test_scenario_2_missing_or_invalid_api_key_fails_safely`: PASS
@@ -52,27 +70,56 @@ All 231 targeted backend verification tests, 148 frontend unit/component tests, 
   - `test_scenario_12_model_switch_preserves_task_and_tool_results`: PASS
   - `test_scenario_13_context_overflow_handled_explicitly`: PASS
 
-### Suite 2: Specialist Workforce & Multi-Agent Concurrency
-- **File:** `tests/workforce/test_specialist_workforce.py`
-- **Command:** `pytest tests/workforce/test_specialist_workforce.py -v`
-- **Result:** 11/11 PASSED (6.39s)
+### Suite 3: Real Google Chrome Binary & Extension Bridge Integration
+- **File:** `tests/browser/test_real_chrome_integration.py`
+- **Binary:** `C:\Program Files\Google\Chrome\Application\chrome.exe`
+- **Command:** `pytest tests/browser/test_real_chrome_integration.py -v`
+- **Result:** 10/10 PASSED (16.67s)
 - **Key Verifications:**
-  - `test_scenario_1_atlas_selects_correct_specialist`: PASS
-  - `test_scenario_2_agent_tool_restrictions_enforced`: PASS
-  - `test_scenario_3_child_agent_cannot_exceed_central_policy`: PASS
-  - `test_scenario_4_read_only_agents_cannot_modify_files`: PASS
-  - `test_scenario_5_independent_tasks_execute_concurrently`: PASS
-  - `test_scenario_6_conflicting_file_edits_isolated_or_blocked`: PASS
-  - `test_scenario_7_child_failure_reported_to_parent`: PASS
-  - `test_scenario_8_parent_cancellation_propagates`: PASS
-  - `test_scenario_9_results_include_evidence_and_status`: PASS
-  - `test_scenario_10_atlas_detects_conflicting_findings`: PASS
-  - `test_scenario_11_agent_budget_exhaustion_stops_safely`: PASS
+  - `test_real_chrome_cdp_connection`: PASS
+  - `test_real_chrome_list_tabs`: PASS
+  - `test_real_chrome_tab_creation_and_closure`: PASS
+  - `test_real_chrome_tab_reuse_existing_tab`: PASS
+  - `test_real_chrome_duplicate_tab_prevention_repeated_calls`: PASS
+  - `test_real_chrome_explicit_new_tab_request`: PASS
+  - `test_real_chrome_active_tab_identification`: PASS
+  - `test_cdp_connection_failure_handling`: PASS
+  - `test_extension_bridge_authenticated_session_and_tab_reuse`: PASS
+  - `test_extension_bridge_disconnection_and_reconnection`: PASS
 
-### Suite 3: Voice State Machine, EchoGuard & Indic Languages
+### Suite 4: Playwright Browser Tab Reuse Suite
+- **File:** `tests/browser/test_playwright_tab_reuse.py`
+- **Command:** `pytest tests/browser/test_playwright_tab_reuse.py -v`
+- **Result:** 10/10 PASSED (24.30s)
+- **Key Verifications:**
+  - `test_scenario_1_website_already_open_reuses_tab`: PASS
+  - `test_scenario_2_website_not_open_creates_one_new_tab`: PASS
+  - `test_scenario_3_repeated_requests_prevent_duplicate_tabs`: PASS
+  - `test_scenario_4_multiple_tabs_selects_correct_tab`: PASS
+  - `test_scenario_5_browser_disconnected_recovers_safely`: PASS
+  - `test_scenario_6_preserve_session_cookies_and_state`: PASS
+  - `test_scenario_7_detect_active_tab_change`: PASS (asserts exact active tab `pw_0` with URL and `is_active=True`)
+  - `test_scenario_8_explicit_new_tab_request`: PASS
+  - `test_scenario_9_existing_website_different_path`: PASS
+  - `test_scenario_10_repeated_tool_calls_reuse_session`: PASS
+
+### Suite 5: Specialist Workforce & Multi-Agent Concurrency
+- **Files:** `tests/workforce/test_specialist_workforce.py` & `tests/agents/test_normalized_agent_runtime.py`
+- **Command:** `pytest tests/workforce/test_specialist_workforce.py tests/agents/test_normalized_agent_runtime.py -v`
+- **Result:** 23/23 PASSED (4.95s)
+- **Key Verifications:**
+  - 11 workforce specialist delegation scenarios: PASS
+  - 12 normalized agent runtime lifecycle & cancellation scenarios: PASS
+
+### Suite 6: Durable Autonomy & Persistent Tasks
+- **Files:** `tests/tasks/test_durable_autonomy.py` & `tests/tasks/test_tasks_store.py`
+- **Command:** `pytest tests/tasks/test_durable_autonomy.py tests/tasks/test_tasks_store.py -v`
+- **Result:** 17/17 PASSED (5.68s)
+
+### Suite 7: Voice State Machine, EchoGuard & Indic Languages
 - **File:** `tests/speech/test_voice_advanced.py`
 - **Command:** `pytest tests/speech/test_voice_advanced.py -v`
-- **Result:** 9/9 PASSED (0.82s)
+- **Result:** 9/9 PASSED (2.41s)
 - **Key Verifications:**
   - `TestEchoGuard::test_playback_lifecycle`: PASS
   - `TestEchoGuard::test_barge_in_interruption`: PASS

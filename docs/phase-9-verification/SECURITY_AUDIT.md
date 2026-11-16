@@ -71,10 +71,15 @@ An independent security evaluation of OpenJarvis was conducted across workspace 
 ### Target: `src/openjarvis/models/selector.py` & `discovery.py`
 
 #### Security Vulnerability Identified & Remediated (DEF-01)
-- **Defect:** In `ModelSelectionEngine.select_model()`, when `ModelPolicy.CLOUD_FIRST` was active, `effective_allow_paid` was unconditionally set to `True`. This allowed paid cloud providers to be queried without explicit user consent.
-- **Remediation:** Fixed in `src/openjarvis/models/selector.py`. Paid models now default strictly to `self.allow_paid_models` (False). Paid models are only unlocked when `allow_paid=True` is explicitly passed in invocation parameters.
+- **Defects:**
+  1. In `ModelSelectionEngine.select_model()`, when `ModelPolicy.CLOUD_FIRST` was active, `effective_allow_paid` was unconditionally set to `True`.
+  2. In `ModelSelectionEngine.handle_model_failure()`, the fallback recovery logic similarly contained `elif self.policy == ModelPolicy.CLOUD_FIRST: effective_allow_paid = True`.
+  This allowed runtime errors, rate limits, or provider outages to silently fall back to paid API endpoints without user consent.
+- **Remediation:** Remediated in `src/openjarvis/models/selector.py`. Paid models now default strictly to `self.allow_paid_models` (False) across selection, retry, and fallback entry points. Paid models are only unlocked when `allow_paid=True` is explicitly passed in invocation parameters. Automatic retries, background tasks, and agent-level invocations strictly preserve zero-cost restrictions.
 - **Fail-Closed Privacy Policy:** Under `ModelPolicy.PRIVACY_FIRST`, candidate queries strictly reject all remote endpoints. If no local Ollama model is available or healthy, the system raises `NoCompatibleModelAvailable` rather than falling through to any network service.
-- **Verified Test:** `tests/models/test_free_model_routing.py::test_scenario_10` verified with explicit Case D assertion.
+- **Verified Tests:**
+  - `tests/models/test_paid_model_fallback_security.py` (10/10 scenarios passed in 1.28s) asserting explicit provider selection and zero paid fallback across retries, background tasks, outages, and agent delegation.
+  - `tests/models/test_free_model_routing.py::test_scenario_10` verified with explicit Case D assertion (13/13 passed).
 
 ---
 

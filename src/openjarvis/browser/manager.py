@@ -28,11 +28,16 @@ logger = logging.getLogger(__name__)
 class DesktopBrowserManager:
     """Singleton service providing persistent control, tab inspection, and intelligent reuse for desktop browsers."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cdp_bridge: Optional[CDPBridge] = None,
+        extension_bridge: Optional[ExtensionBridge] = None,
+        detector: Optional[WindowsBrowserDetector] = None,
+    ) -> None:
         self.state = BrowserState.DISCONNECTED
-        self.extension_bridge = ExtensionBridge()
-        self.cdp_bridge = CDPBridge()
-        self.detector = WindowsBrowserDetector()
+        self.extension_bridge = extension_bridge or ExtensionBridge()
+        self.cdp_bridge = cdp_bridge or CDPBridge()
+        self.detector = detector or WindowsBrowserDetector()
         self._last_state_change = time.time()
         self._destination_locks: Dict[str, asyncio.Lock] = {}
         self._lock_guard = threading.Lock()
@@ -64,12 +69,48 @@ class DesktopBrowserManager:
         else:
             self.refresh_status()
 
+    def _instrument_playwright_context(self, context: Any) -> None:
+        """Instrument Playwright context and pages to track active tab transitions accurately."""
+        pages = getattr(context, "pages", [])
+        for idx, page in enumerate(pages):
+            self._instrument_playwright_page(page, idx)
+
+        if hasattr(context, "on"):
+            def on_new_page(new_page):
+                idx = len(getattr(context, "pages", [])) - 1
+                self._active_playwright_tab_idx = max(0, idx)
+                self._instrument_playwright_page(new_page, idx)
+            try:
+                context.on("page", on_new_page)
+            except Exception:
+                pass
+
+    def _instrument_playwright_page(self, page: Any, idx: int) -> None:
+        if getattr(page, "_jarvis_instrumented", False):
+            return
+        orig_bring_to_front = getattr(page, "bring_to_front", None)
+        if orig_bring_to_front:
+            def hooked_bring_to_front(*args, **kwargs):
+                pages = getattr(self._playwright_context, "pages", [])
+                try:
+                    curr_idx = pages.index(page)
+                except Exception:
+                    curr_idx = idx
+                self._active_playwright_tab_idx = curr_idx
+                return orig_bring_to_front(*args, **kwargs)
+            try:
+                page.bring_to_front = hooked_bring_to_front
+                page._jarvis_instrumented = True
+            except Exception:
+                pass
+
     def register_playwright_context(self, context: Any) -> None:
         """Register an active Playwright browser context for direct tab inspection and automation."""
         self._playwright_context = context
         self._active_playwright_tab_idx = None
         if context is not None:
             self._set_state(BrowserState.READY)
+            self._instrument_playwright_context(context)
 
     def unregister_playwright_context(self) -> None:
         """Clear the registered Playwright context."""
@@ -208,8 +249,9 @@ class DesktopBrowserManager:
         # STEP 1: Check whether a supported browser is running
         browser_running = (
             self._playwright_context is not None
-            or self.detector.is_browser_running()
             or self.extension_bridge.is_connected
+            or self.cdp_bridge.is_available()
+            or self.detector.is_browser_running()
         )
 
         # If user explicitly asked for a new tab or window, honor that intent

@@ -403,21 +403,17 @@ class ModelDiscoveryEngine:
                 env_key = os.environ.get(env_key_map.get(prov, ""))
 
                 if client is None and not env_key:
-                    if prov == "openrouter":
-                        # OpenRouter models endpoint is publicly accessible without API key to discover free models
-                        api_key = ""
-                    else:
-                        self._provider_health[prov] = {
-                            "provider": prov,
-                            "type": "cloud",
-                            "status": "unconfigured",
-                            "connected": False,
-                            "model_count": 0,
-                            "latency_ms": 0.0,
-                            "last_checked": time.time(),
-                            "error": "API key not configured",
-                        }
-                        continue
+                    self._provider_health[prov] = {
+                        "provider": prov,
+                        "type": "cloud",
+                        "status": "unconfigured",
+                        "connected": False,
+                        "model_count": 0,
+                        "latency_ms": 0.0,
+                        "last_checked": time.time(),
+                        "error": "API key not configured",
+                    }
+                    continue
 
                 # Live query provider model list API and measure real latency
                 t0 = time.monotonic()

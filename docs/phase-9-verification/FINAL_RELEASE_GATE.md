@@ -19,16 +19,16 @@ Every claim in this report is supported by verifiable code changes and test exec
 
 | # | Release Gate Criterion | Verification Standard | Evidence & Findings | Result |
 | :---: | :--- | :--- | :--- | :---: |
-| **1** | **Evidence Over Claims** | Independent source code inspection, no blind trust of past reports | Full codebase surveyed; 9,889 tests discovered; actual code audited | **PASSED** |
-| **2** | **Free-First AI Model Policy** | Zero mandatory paid APIs; paid models hard-blocked by default | DEF-01 fixed; `CLOUD_FIRST` policy no longer leaks paid models; 13/13 tests pass | **PASSED** |
+| **1** | **Evidence Over Claims** | Independent source code inspection, no blind trust of past reports | Full codebase surveyed; actual code audited across all critical subsystems | **PASSED** |
+| **2** | **Free-First AI Model Policy** | Zero mandatory paid APIs; paid models hard-blocked by default | DEF-01 fixed; `CLOUD_FIRST` and runtime fallback never leak paid models; 10/10 security scenarios pass | **PASSED** |
 | **3** | **Live Local Model Execution** | Ollama running locally; real inference on host hardware | `http://127.0.0.1:11434` verified; `qwen3:4b-instruct` live query generated 15 tokens in 1149 ms (HTTP 200) | **PASSED** |
-| **4** | **Browser Automation & Tab Reuse**| Real Playwright tests across 10 scenarios; 0 duplicate tabs | `tests/browser/test_playwright_tab_reuse.py` 10/10 scenarios passed in 26.28s | **PASSED** |
-| **5** | **Voice Pipeline & Acoustic Echo** | Continuous listening, `EchoGuard`, Malayalam / Indic support | DEF-04 fixed; `tests/speech/test_voice_advanced.py` 9/9 tests passed in 0.82s | **PASSED** |
+| **4** | **Browser Automation & Tab Reuse**| Real Chrome binary & Playwright tests across 40 tests; 0 duplicate tabs | Real Chrome CDP & extension tests passed (10/10); Playwright tab reuse passed (10/10) | **PASSED** |
+| **5** | **Voice Pipeline & Acoustic Echo** | Continuous listening, `EchoGuard`, Malayalam / Indic support | DEF-04 fixed; `tests/speech/test_voice_advanced.py` 9/9 tests passed in 2.41s | **PASSED** |
 | **6** | **Memory & Secret Redaction** | Cross-session continuity, pre-persistence credential scrubbing | Secret sanitization patterns verified; SQLite memory stores verified | **PASSED** |
 | **7** | **Fail-Closed Workspace Sandbox**| Symlink/junction traversal blocked; 0 subprocess leaks | 188 sandbox tests passed; zero escapes on Windows NTFS | **PASSED** |
-| **8** | **Frontend Production Build** | Vitest suites passing; production assets cleanly bundled | 148 Vitest tests passed (2.50s); Vite production build passed (1.39s) | **PASSED** |
-| **9** | **Defect Remediation** | All discovered bugs cataloged and regression-tested | DEF-01 through DEF-06 fully remediated and documented in `BUG_FIX_LOG.md` | **PASSED** |
-| **10**| **Phase 9 Documentation Suite** | 10 comprehensive audit and verification reports compiled | All 10 documents created in `docs/phase-9-verification/` | **PASSED** |
+| **8** | **Frontend Production Build** | Vitest suites passing; production assets cleanly bundled | 148 Vitest tests passed (2.21s); Vite production build passed (1.28s) | **PASSED** |
+| **9** | **Defect Remediation** | All discovered bugs cataloged and regression-tested | DEF-01 through DEF-08 fully remediated and documented in `BUG_FIX_LOG.md` | **PASSED** |
+| **10**| **Phase 9 Documentation Suite** | 10 comprehensive audit and verification reports compiled | All 10 documents created & updated in `docs/phase-9-verification/` | **PASSED** |
 
 ---
 

@@ -224,11 +224,17 @@ def test_scenario_7_detect_active_tab_change(browser_context: BrowserContext, ma
     tabs = manager.list_tabs()
     assert len(tabs) == 2
     assert tabs[1].is_active is True
+    initial_active = manager.get_active_tab()
+    assert initial_active is not None
+    assert initial_active.tab_id == "pw_1"
 
     # User switches to page 1
     page1.bring_to_front()
     active_tab = manager.get_active_tab()
     assert active_tab is not None
+    assert active_tab.tab_id == "pw_0", f"Expected tab ID pw_0, but got {active_tab.tab_id}"
+    assert "tab1" in active_tab.url
+    assert active_tab.is_active is True
 
 
 # ---------------------------------------------------------------------------

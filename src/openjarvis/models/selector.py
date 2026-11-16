@@ -211,6 +211,26 @@ class ModelSelectionEngine:
                             hardware_notes=self._format_hardware_notes(c),
                         )
 
+            # If fallback model is specified, verify it is available, healthy, and meets constraints
+            if fallback_model:
+                for c in candidates:
+                    if (
+                        c.model_id.lower() == fallback_model.lower()
+                        or c.display_name.lower() == fallback_model.lower()
+                    ):
+                        return SelectionResult(
+                            model_id=c.model_id,
+                            provider=c.provider,
+                            task_type=t_str,
+                            reason=f"Configured fallback model '{fallback_model}' is verified available and meets task requirements",
+                            policy=self.policy.value,
+                            is_local=c.is_local,
+                            context_length=c.context_length,
+                            score=95.0,
+                            alternatives=[m.model_id for m in candidates if m.model_id != c.model_id][:3],
+                            hardware_notes=self._format_hardware_notes(c),
+                        )
+
             # 5. Handle empty candidate list (fail-closed behavior)
             if not candidates:
                 if is_privacy_strict:
@@ -456,23 +476,46 @@ class ModelSelectionEngine:
                 if hasattr(self.discovery, "get_all_models")
                 else self.discovery.discover_all()
             )
-            is_privacy_strict = (self.policy == ModelPolicy.PRIVACY_FIRST)
+            # If context provided, respect any local_only / allow_paid restrictions stored in context
+            local_only = False
+            req_caps: Set[str] = set()
+            min_context_tokens = 4096
+            max_cost_per_m = None
+            confidence_policy = CapabilityConfidencePolicy.ALLOW_INFERRED
+
+            if context and isinstance(context, dict):
+                local_only = context.get("local_only", False)
+                if allow_paid is None and "allow_paid" in context:
+                    allow_paid = context["allow_paid"]
+                if "required_capabilities" in context:
+                    req_caps.update(context["required_capabilities"])
+                min_context_tokens = context.get("min_context_tokens", 4096)
+                max_cost_per_m = context.get("max_cost_per_m", None)
+                confidence_policy = context.get("confidence_policy", CapabilityConfidencePolicy.ALLOW_INFERRED)
+
+            is_privacy_strict = local_only or (self.policy == ModelPolicy.PRIVACY_FIRST)
+
+            # Strict Zero-Cost Policy: CLOUD_FIRST must NEVER authorize paid models automatically.
+            # Default is strictly allow_paid_models (False). Only an explicit allow_paid=True argument enables it.
             if is_privacy_strict:
                 effective_allow_paid = False
             elif allow_paid is not None:
                 effective_allow_paid = allow_paid
-            elif self.policy == ModelPolicy.CLOUD_FIRST:
-                effective_allow_paid = True
             else:
                 effective_allow_paid = getattr(self, "allow_paid_models", False)
 
-            eligible = [
-                m for m in all_models
-                if m.model_id != failed_model_id
-                and m.health_status == "healthy"
-                and (not is_privacy_strict or m.is_local)
-                and (effective_allow_paid or m.is_free)
-            ]
+            # Filter candidates using the same rigorous boundaries as initial selection
+            candidates = self._filter_candidates(
+                all_models=all_models,
+                task_type=task_type,
+                required_capabilities=req_caps,
+                local_only=is_privacy_strict,
+                allow_paid=effective_allow_paid,
+                min_context_tokens=min_context_tokens,
+                max_cost_per_m=max_cost_per_m,
+                confidence_policy=confidence_policy,
+            )
+            eligible = [m for m in candidates if m.model_id != failed_model_id]
 
             if eligible:
                 scored = []
