@@ -13,6 +13,41 @@ const apiTarget = process.env.OPENJARVIS_VITE_PROXY_TARGET
   || process.env.VITE_API_URL
   || 'http://localhost:8000';
 
+const createProxyConfig = (isWs = false) => ({
+  target: apiTarget,
+  changeOrigin: true,
+  ws: isWs,
+  configure: (proxy: any) => {
+    proxy.on('error', (err: any, _req: any, res: any) => {
+      const isConnectionError =
+        err.code === 'ECONNREFUSED' ||
+        err.code === 'ECONNRESET' ||
+        err.code === 'ENOTFOUND' ||
+        err.code === 'ETIMEDOUT';
+
+      if (isConnectionError) {
+        // Suppress verbose proxy connection error stack dumps while backend starts up
+        if (res && typeof res.writeHead === 'function' && !res.headersSent) {
+          res.writeHead(503, {
+            'Content-Type': 'application/json',
+            'Retry-After': '2',
+          });
+          res.end(
+            JSON.stringify({
+              error: 'OpenJarvis backend server is starting up or temporarily unavailable',
+              code: err.code,
+            })
+          );
+        } else if (res && typeof res.destroy === 'function') {
+          res.destroy();
+        }
+        return;
+      }
+      console.error('[vite proxy error]:', err.message || err);
+    });
+  },
+});
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -67,13 +102,9 @@ export default defineConfig({
       // Vite proxies the HTTP request but not the upgrade, so the socket never
       // opens — no error, no close event, just silence — and every live agent
       // view sits empty in dev while working in a production build.
-      '/v1': {
-        target: apiTarget,
-        changeOrigin: true,
-        ws: true,
-      },
-      '/health': apiTarget,
-      '/api': apiTarget,
+      '/v1': createProxyConfig(true),
+      '/health': createProxyConfig(false),
+      '/api': createProxyConfig(false),
     },
   },
 });

@@ -573,6 +573,17 @@ def gui(frontend_port: int, api_port: int, no_server: bool, no_browser: bool) ->
         url = f"http://127.0.0.1:{frontend_port}"
         console.print(f"[green]OpenJarvis graphical mode is ready:[/green] {url}")
         if not no_browser:
+            if launched_api and not _api_healthy(api_port):
+                console.print(
+                    "[dim]Waiting for OpenJarvis API server to initialize...[/dim]"
+                )
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline:
+                    if _api_healthy(api_port, timeout=0.5):
+                        break
+                    if not _daemon_pid_alive(api_port):
+                        break
+                    time.sleep(0.5)
             webbrowser.open(url)
 
         watch_api = _api_healthy(api_port)

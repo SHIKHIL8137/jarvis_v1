@@ -9,6 +9,8 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 vi.mock('../../lib/api', () => ({
   fetchSpeechHealth: vi.fn(async () => ({ available: true })),
   transcribeAudio: vi.fn(async () => ({ text: 'test speech' })),
+  synthesizeSpeech: vi.fn(async () => new Blob(['fake-audio'], { type: 'audio/wav' })),
+  interruptSpeech: vi.fn(async () => true),
 }));
 
 let mockMessages: Array<{ id: string; role: string; content: string }> = [];

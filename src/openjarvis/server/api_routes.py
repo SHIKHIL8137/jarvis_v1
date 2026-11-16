@@ -38,6 +38,18 @@ class SpeechSynthesizeRequest(BaseModel):
     text: str
     voice_id: Optional[str] = None
     speed: Optional[float] = None
+    pitch: Optional[str] = None
+    profile: Optional[str] = None
+    backend: Optional[str] = None
+
+
+class SpeechSettingsRequest(BaseModel):
+    voice_profile: Optional[str] = None
+    tts_backend: Optional[str] = None
+    voice_id: Optional[str] = None
+    voice_speed: Optional[float] = None
+    voice_pitch: Optional[str] = None
+    volume: Optional[float] = None
 
 
 class MemoryStoreRequest(BaseModel):
@@ -1257,17 +1269,50 @@ def _tts_voice_and_speed(request: Request, backend) -> tuple[str, float]:
     return voice_id, speed
 
 
+def _persist_speech_config(updates: Dict[str, Any]) -> None:
+    """Safely persist speech configuration updates to ~/.openjarvis/config.toml."""
+    try:
+        import tomlkit
+        from openjarvis.core.config import load_config
+        from openjarvis.core.paths import get_config_path
+
+        config_path = get_config_path()
+        if config_path.exists():
+            doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+        else:
+            doc = tomlkit.document()
+
+        if "speech" not in doc:
+            doc.add("speech", tomlkit.table())
+
+        speech_table = doc["speech"]
+        for k, v in updates.items():
+            if v is not None:
+                speech_table[k] = v
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        load_config.cache_clear()
+    except Exception as exc:
+        logger.warning("Failed to persist speech config to toml: %s", exc)
+
+
 @speech_router.post("/synthesize")
 async def synthesize_speech(request: Request, body: SpeechSynthesizeRequest):
     """Synthesize text to speech and return the audio as WAV."""
-    text = body.text.strip()
-    if not text:
+    from openjarvis.speech.pronunciation import normalize_for_speech
+
+    raw_text = body.text.strip()
+    if not raw_text:
         raise HTTPException(status_code=400, detail="Missing 'text'")
-    if len(text) > _MAX_TTS_CHARS:
+    if len(raw_text) > _MAX_TTS_CHARS:
         raise HTTPException(
             status_code=413,
             detail=f"Text exceeds {_MAX_TTS_CHARS} characters",
         )
+
+    # Normalize technical terminology, numbers, currencies, code formatting, and emojis
+    text = normalize_for_speech(raw_text)
 
     backend = await _resolve_tts_backend(request)
     if backend is None:
@@ -1281,13 +1326,19 @@ async def synthesize_speech(request: Request, body: SpeechSynthesizeRequest):
     if body.speed is not None:
         speed = body.speed
 
+    synth_kwargs: Dict[str, Any] = {
+        "voice_id": voice_id,
+        "speed": speed,
+        "output_format": "wav",
+    }
+    if body.pitch:
+        synth_kwargs["pitch"] = body.pitch
+
     try:
         result = await asyncio.to_thread(
             backend.synthesize,
             text,
-            voice_id=voice_id,
-            speed=speed,
-            output_format="wav",
+            **synth_kwargs,
         )
     except Exception as exc:
         logger.exception("Speech synthesis failed")
@@ -1299,23 +1350,216 @@ async def synthesize_speech(request: Request, body: SpeechSynthesizeRequest):
         headers={
             "X-Voice-Id": result.voice_id or voice_id,
             "X-Sample-Rate": str(result.sample_rate),
+            "X-Duration-Seconds": str(result.duration_seconds),
         },
     )
 
 
+@speech_router.post("/synthesize/stream")
+async def synthesize_speech_stream(request: Request, body: SpeechSynthesizeRequest):
+    """Low-latency streaming synthesis returning progressive sentence audio chunks (NDJSON)."""
+    import base64
+    import json
+    from fastapi.responses import StreamingResponse
+    from openjarvis.speech.pronunciation import normalize_for_speech
+    from openjarvis.speech.segmenter import segment_sentences
+
+    raw_text = body.text.strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="Missing 'text'")
+
+    text = normalize_for_speech(raw_text)
+    sentences = segment_sentences(text)
+    if not sentences:
+        sentences = [text]
+
+    backend = await _resolve_tts_backend(request)
+    if backend is None:
+        raise HTTPException(status_code=501, detail="No text-to-speech backend available")
+
+    voice_id, speed = _tts_voice_and_speed(request, backend)
+    if body.voice_id:
+        voice_id = body.voice_id
+    if body.speed is not None:
+        speed = body.speed
+
+    async def generate_chunks():
+        total = len(sentences)
+        for idx, sentence in enumerate(sentences):
+            try:
+                synth_kwargs: Dict[str, Any] = {
+                    "voice_id": voice_id,
+                    "speed": speed,
+                    "output_format": "wav",
+                }
+                if body.pitch:
+                    synth_kwargs["pitch"] = body.pitch
+
+                res = await asyncio.to_thread(backend.synthesize, sentence, **synth_kwargs)
+                b64_audio = base64.b64encode(res.audio).decode("ascii")
+                chunk_payload = {
+                    "index": idx,
+                    "total": total,
+                    "sentence": sentence,
+                    "audio_base64": b64_audio,
+                    "sample_rate": res.sample_rate,
+                    "duration_seconds": res.duration_seconds,
+                    "voice_id": res.voice_id or voice_id,
+                    "is_last": (idx == total - 1),
+                }
+                yield json.dumps(chunk_payload) + "\n"
+            except Exception as exc:
+                logger.warning("Stream chunk %d synthesis failed: %s", idx, exc)
+                err_payload = {"index": idx, "error": str(exc), "is_last": (idx == total - 1)}
+                yield json.dumps(err_payload) + "\n"
+
+    return StreamingResponse(generate_chunks(), media_type="application/x-ndjson")
+
+
+@speech_router.get("/profiles")
+async def list_speech_profiles():
+    """List available assistant voice profiles."""
+    from openjarvis.speech.profiles import get_voice_profile_manager
+
+    mgr = get_voice_profile_manager()
+    return {"profiles": [p.to_dict() for p in mgr.list_profiles()]}
+
+
+@speech_router.post("/profiles/{profile_id}/apply")
+async def apply_speech_profile(request: Request, profile_id: str):
+    """Apply and persist a voice profile."""
+    from openjarvis.speech.profiles import get_voice_profile_manager
+
+    mgr = get_voice_profile_manager()
+    profile = mgr.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail=f"Voice profile '{profile_id}' not found")
+
+    # Update in-memory app state config if present
+    cfg = getattr(request.app.state, "config", None)
+    if cfg is not None and getattr(cfg, "speech", None) is not None:
+        cfg.speech.voice_profile = profile.profile_id
+        cfg.speech.tts_backend = profile.backend
+        cfg.speech.voice_id = profile.voice_id
+        cfg.speech.voice_speed = profile.speed
+        cfg.speech.voice_pitch = profile.pitch
+
+    # Reset backend resolution so the new profile takes effect immediately
+    request.app.state.tts_resolved = False
+    request.app.state.tts_backend = None
+
+    # Persist to ~/.openjarvis/config.toml
+    _persist_speech_config({
+        "voice_profile": profile.profile_id,
+        "tts_backend": profile.backend,
+        "voice_id": profile.voice_id,
+        "voice_speed": profile.speed,
+        "voice_pitch": profile.pitch,
+    })
+
+    return {"success": True, "applied_profile": profile.to_dict()}
+
+
+@speech_router.get("/voices")
+async def list_available_voices():
+    """List all available voices across supported TTS providers."""
+    import openjarvis.speech  # noqa: F401
+    from openjarvis.core.registry import TTSRegistry
+    from openjarvis.speech.edge_tts_backend import EdgeTTSBackend
+
+    voices_by_provider: Dict[str, Any] = {}
+
+    # Edge TTS voices
+    voices_by_provider["edge_tts"] = [
+        {"id": k, **v} for k, v in EdgeTTSBackend.VOICE_CATALOG.items()
+    ]
+
+    # Kokoro voices
+    if TTSRegistry.contains("kokoro"):
+        try:
+            backend = TTSRegistry.get("kokoro")()
+            voices_by_provider["kokoro"] = [{"id": vid, "name": vid} for vid in backend.available_voices()]
+        except Exception:
+            voices_by_provider["kokoro"] = []
+
+    # Windows SAPI voices
+    if TTSRegistry.contains("windows_tts"):
+        try:
+            backend = TTSRegistry.get("windows_tts")()
+            voices_by_provider["windows_tts"] = [{"id": vid, "name": vid} for vid in backend.available_voices()]
+        except Exception:
+            voices_by_provider["windows_tts"] = []
+
+    return {"voices": voices_by_provider}
+
+
+@speech_router.post("/settings")
+async def update_speech_settings(request: Request, body: SpeechSettingsRequest):
+    """Update and persist speech configuration settings."""
+    cfg = getattr(request.app.state, "config", None)
+    updates: Dict[str, Any] = {}
+
+    if body.voice_profile is not None:
+        updates["voice_profile"] = body.voice_profile
+        if cfg and getattr(cfg, "speech", None):
+            cfg.speech.voice_profile = body.voice_profile
+
+    if body.tts_backend is not None:
+        updates["tts_backend"] = body.tts_backend
+        if cfg and getattr(cfg, "speech", None):
+            cfg.speech.tts_backend = body.tts_backend
+
+    if body.voice_id is not None:
+        updates["voice_id"] = body.voice_id
+        if cfg and getattr(cfg, "speech", None):
+            cfg.speech.voice_id = body.voice_id
+
+    if body.voice_speed is not None:
+        updates["voice_speed"] = body.voice_speed
+        if cfg and getattr(cfg, "speech", None):
+            cfg.speech.voice_speed = body.voice_speed
+
+    if body.voice_pitch is not None:
+        updates["voice_pitch"] = body.voice_pitch
+        if cfg and getattr(cfg, "speech", None):
+            cfg.speech.voice_pitch = body.voice_pitch
+
+    if body.volume is not None:
+        updates["volume"] = body.volume
+        if cfg and getattr(cfg, "speech", None):
+            cfg.speech.volume = body.volume
+
+    request.app.state.tts_resolved = False
+    request.app.state.tts_backend = None
+
+    _persist_speech_config(updates)
+    return {"success": True, "updated": updates}
+
+
 @speech_router.get("/tts/health")
 async def tts_health(request: Request):
-    """Report whether voice output is available, and with which voice."""
+    """Report whether voice output is available, and with which voice and profile."""
     backend = await _resolve_tts_backend(request)
     if backend is None:
         return {"available": False, "reason": "No text-to-speech backend available"}
 
     voice_id, speed = _tts_voice_and_speed(request, backend)
+    config = getattr(request.app.state, "config", None)
+    profile_id = getattr(config.speech, "voice_profile", "classic_jarvis") if config and getattr(config, "speech", None) else "classic_jarvis"
+    pitch = getattr(config.speech, "voice_pitch", "+0Hz") if config and getattr(config, "speech", None) else "+0Hz"
+
+    from openjarvis.speech.profiles import get_voice_profile_manager
+    prof = get_voice_profile_manager().get_profile(profile_id)
+    profile_name = prof.name if prof else "Classic Jarvis"
+
     return {
         "available": True,
         "backend": getattr(backend, "backend_id", ""),
         "voice_id": voice_id,
         "speed": speed,
+        "pitch": pitch,
+        "profile": profile_id,
+        "profile_name": profile_name,
     }
 
 
@@ -1496,6 +1740,7 @@ def include_all_routes(app) -> None:
     from openjarvis.server.approval_routes import (
         router as approval_router,  # noqa: PLC0415
     )
+    from openjarvis.server.browser_routes import router as browser_router
     from openjarvis.server.models_routes import router as models_router
     from openjarvis.server.n8n_routes import router as n8n_router
     from openjarvis.server.routine_routes import routine_router
@@ -1504,6 +1749,7 @@ def include_all_routes(app) -> None:
     from openjarvis.server.workforce_routes import router as workforce_router
 
     app.include_router(approval_router)
+    app.include_router(browser_router)
     app.include_router(security_router)
     app.include_router(tasks_router)
     app.include_router(workforce_router)

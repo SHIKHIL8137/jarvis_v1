@@ -69,23 +69,61 @@ export default function App() {
   useEffect(() => {
     if (!setupDone) return;
     let cancelled = false;
-    setModelsLoading(true);
-    fetchModels()
-      .then((m) => {
-        if (!cancelled) setModels(m);
-      })
-      // Preserve models already loaded by setup if this refresh fails.
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setModelsLoading(false);
-      });
-    return () => { cancelled = true; };
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retries = 0;
+    const maxRetries = 10;
+
+    const loadModels = () => {
+      setModelsLoading(true);
+      fetchModels()
+        .then((m) => {
+          if (!cancelled) setModels(m);
+        })
+        .catch(() => {
+          // Retry automatically if the backend server is still initializing
+          if (!cancelled && retries < maxRetries) {
+            retries++;
+            retryTimer = setTimeout(loadModels, 2500);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setModelsLoading(false);
+        });
+    };
+
+    loadModels();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [setupDone, setModels, setModelsLoading]);
 
-  // Fetch server info
+  // Fetch server info with retry if backend is initializing
   useEffect(() => {
     if (!setupDone) return;
-    fetchServerInfo().then(setServerInfo).catch(() => {});
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retries = 0;
+    const maxRetries = 10;
+
+    const loadInfo = () => {
+      fetchServerInfo()
+        .then((info) => {
+          if (!cancelled) setServerInfo(info);
+        })
+        .catch(() => {
+          if (!cancelled && retries < maxRetries) {
+            retries++;
+            retryTimer = setTimeout(loadInfo, 2500);
+          }
+        });
+    };
+
+    loadInfo();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [setupDone, setServerInfo]);
 
   // Poll savings and optionally share to Supabase

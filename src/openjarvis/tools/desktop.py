@@ -168,14 +168,16 @@ class OpenUrlTool(BaseTool):
         return ToolSpec(
             name="open_url",
             description=(
-                "Open a web page, or run a Google search, in the user's default browser."
+                "Open a web page, or run a Google search, in the user's desktop browser with intelligent tab reuse."
+                " If the website is already open in an existing tab, Jarvis activates that tab instead of opening duplicates."
                 " Give either url or query."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "http(s) URL."},
-                    "query": {"type": "string", "description": "Google search text."},
+                    "url": {"type": "string", "description": "http(s) URL to open or reuse."},
+                    "query": {"type": "string", "description": "Google search text or website name."},
+                    "new_tab": {"type": "boolean", "description": "Explicitly force opening a new tab instead of reusing an existing tab."},
                 },
             },
             category="desktop",
@@ -185,12 +187,37 @@ class OpenUrlTool(BaseTool):
     def execute(self, **params: Any) -> ToolResult:
         query = str(params.get("query", "")).strip()
         url = str(params.get("url", "")).strip()
+        new_tab = bool(params.get("new_tab", False))
+        task_context = str(params.get("task_context", "")).strip()
+
         if query:
             url = "https://www.google.com/search?q=" + quote_plus(query)
-        if urlparse(url).scheme not in ("http", "https") or not urlparse(url).netloc:
+        if not url:
             return _fail("open_url", "Only http(s) URLs can be opened.")
-        webbrowser.open(url)
-        return _ok("open_url", f"Opened {url}", url=url)
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return _fail("open_url", "Only http(s) URLs can be opened.")
+
+        try:
+            from openjarvis.browser.manager import get_browser_manager
+
+            mgr = get_browser_manager()
+            res = mgr.open_or_reuse(url, explicit_new_tab=new_tab, task_context=task_context)
+            if not res.success and not res.reused_existing:
+                webbrowser.open(url)
+                return _ok("open_url", f"Opened {url}", url=url, reused_existing=False)
+
+            return _ok(
+                "open_url",
+                res.message,
+                url=url,
+                reused_existing=res.reused_existing,
+                action=res.action,
+            )
+        except Exception:
+            webbrowser.open(url)
+            return _ok("open_url", f"Opened {url}", url=url, reused_existing=False)
 
 
 @ToolRegistry.register("screen_ocr")
@@ -387,3 +414,123 @@ class WindowManageTool(BaseTool):
                     return _fail("window_manage", f"Could not focus {t!r}: {exc}")
                 return _ok("window_manage", f"Focused {t!r}.")
         return _fail("window_manage", f"No window matching '{target}'.")
+
+
+@ToolRegistry.register("browser_list_tabs")
+class BrowserListTabsTool(BaseTool):
+    tool_id = "browser_list_tabs"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="browser_list_tabs",
+            description="List all open tabs across running desktop browser windows.",
+            parameters={"type": "object", "properties": {}},
+            category="desktop",
+            timeout_seconds=10.0,
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        try:
+            from openjarvis.browser.manager import get_browser_manager
+
+            mgr = get_browser_manager()
+            tabs = mgr.list_tabs()
+            if not tabs:
+                return _ok("browser_list_tabs", "No open browser tabs detected.", tabs=[])
+            summary = "\n".join(
+                f"- [{t.tab_id}] {t.title or 'Untitled'} ({t.url or t.domain})"
+                f"{' [Active]' if t.is_active else ''}"
+                for t in tabs
+            )
+            return _ok("browser_list_tabs", f"Found {len(tabs)} open tabs:\n{summary}", tabs=[t.to_dict() for t in tabs])
+        except Exception as exc:
+            return _fail("browser_list_tabs", f"Failed to list tabs: {exc}")
+
+
+@ToolRegistry.register("browser_activate_tab")
+class BrowserActivateTabTool(BaseTool):
+    tool_id = "browser_activate_tab"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="browser_activate_tab",
+            description="Activate and focus an open browser tab by tab ID or title keyword.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "string", "description": "Tab ID to activate."},
+                    "title": {"type": "string", "description": "Title keyword to search for and activate."},
+                },
+            },
+            category="desktop",
+            timeout_seconds=10.0,
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        try:
+            from openjarvis.browser.manager import get_browser_manager
+
+            mgr = get_browser_manager()
+            tab_id = str(params.get("tab_id", "")).strip()
+            title = str(params.get("title", "")).strip()
+
+            if not tab_id and not title:
+                return _fail("browser_activate_tab", "Must provide tab_id or title.")
+
+            if not tab_id and title:
+                # Search tabs by title
+                tabs = mgr.list_tabs()
+                for t in tabs:
+                    if title.lower() in t.title.lower() or title.lower() in t.domain.lower():
+                        tab_id = str(t.tab_id)
+                        break
+
+            if not tab_id:
+                return _fail("browser_activate_tab", f"No tab matching title {title!r} found.")
+
+            success = mgr.activate_tab(tab_id, title_hint=title)
+            if success:
+                return _ok("browser_activate_tab", f"Activated tab {tab_id}.", tab_id=tab_id)
+            return _fail("browser_activate_tab", f"Could not activate tab {tab_id}.")
+        except Exception as exc:
+            return _fail("browser_activate_tab", f"Failed to activate tab: {exc}")
+
+
+@ToolRegistry.register("browser_close_tab")
+class BrowserCloseTabTool(BaseTool):
+    tool_id = "browser_close_tab"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="browser_close_tab",
+            description="Close an open browser tab by tab ID.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "string", "description": "Tab ID to close."},
+                },
+                "required": ["tab_id"],
+            },
+            category="desktop",
+            timeout_seconds=10.0,
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        try:
+            from openjarvis.browser.manager import get_browser_manager
+
+            mgr = get_browser_manager()
+            tab_id = str(params.get("tab_id", "")).strip()
+            if not tab_id:
+                return _fail("browser_close_tab", "tab_id is required.")
+
+            success = mgr.close_tab(tab_id)
+            if success:
+                return _ok("browser_close_tab", f"Closed tab {tab_id}.", tab_id=tab_id)
+            return _fail("browser_close_tab", f"Could not close tab {tab_id}.")
+        except Exception as exc:
+            return _fail("browser_close_tab", f"Failed to close tab: {exc}")
+

@@ -17,12 +17,22 @@ import {
   Search,
   Brain,
   RefreshCw,
+  Volume2,
+  Play,
+  Square as StopIcon,
 } from 'lucide-react';
 import { useAppStore, type ThemeMode } from '../lib/store';
 import {
   checkHealth,
   fetchSpeechHealth,
   fetchTtsHealth,
+  fetchVoiceProfiles,
+  applyVoiceProfile,
+  fetchAvailableVoices,
+  updateSpeechSettings,
+  synthesizeSpeech,
+  type VoiceProfileInfo,
+  type VoiceOption,
   getMemoryStats,
   getInferenceSource,
   setInferenceSource,
@@ -39,6 +49,14 @@ import {
   isTauri,
   type InferenceSource,
   type MemoryStats,
+  fetchBrowserStatus,
+  fetchBrowserTabs,
+  openOrReuseBrowserTab,
+  activateBrowserTab,
+  closeBrowserTab,
+  refreshBrowserConnection,
+  type BrowserStatus,
+  type BrowserTab,
 } from '../lib/api';
 import { isAutoUpdateDisabled, setAutoUpdateDisabled } from '../components/Desktop/UpdateChecker';
 
@@ -234,6 +252,267 @@ function DesktopControlToggle() {
   );
 }
 
+function DesktopBrowserIntegration() {
+  const [status, setStatus] = useState<BrowserStatus | null>(null);
+  const [tabs, setTabs] = useState<BrowserTab[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [testUrl, setTestUrl] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+  const [copiedToken, setCopiedToken] = useState(false);
+
+  const loadData = useCallback(async () => {
+    try {
+      const [s, t] = await Promise.all([fetchBrowserStatus(), fetchBrowserTabs()]);
+      setStatus(s);
+      setTabs(t);
+    } catch {
+      // offline or not ready
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    const timer = setInterval(loadData, 5000);
+    return () => clearInterval(timer);
+  }, [loadData]);
+
+  const handleRefresh = async () => {
+    setLoading(true);
+    try {
+      const s = await refreshBrowserConnection();
+      setStatus(s);
+      const t = await fetchBrowserTabs();
+      setTabs(t);
+    } catch (e: any) {
+      setActionMessage(e?.message || 'Refresh failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenOrReuse = async (explicitNewTab = false) => {
+    if (!testUrl.trim()) return;
+    setLoading(true);
+    setActionMessage('');
+    try {
+      const res = await openOrReuseBrowserTab(testUrl.trim(), explicitNewTab);
+      setActionMessage(res.message);
+      await loadData();
+    } catch (e: any) {
+      setActionMessage(e?.message || 'Action failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleActivate = async (tabId: string | number, windowId = 0, title = '') => {
+    try {
+      await activateBrowserTab(tabId, windowId, title);
+      setActionMessage(`Focused tab ${tabId}`);
+      await loadData();
+    } catch (e: any) {
+      setActionMessage(e?.message || 'Activation failed');
+    }
+  };
+
+  const handleClose = async (tabId: string | number) => {
+    try {
+      await closeBrowserTab(tabId);
+      setActionMessage(`Closed tab ${tabId}`);
+      await loadData();
+    } catch (e: any) {
+      setActionMessage(e?.message || 'Close failed');
+    }
+  };
+
+  const copyToken = () => {
+    if (status?.pairing_token) {
+      navigator.clipboard.writeText(status.pairing_token);
+      setCopiedToken(true);
+      setTimeout(() => setCopiedToken(false), 2000);
+    }
+  };
+
+  const isExtensionConnected = status?.extension_connected;
+  const isRunning = status?.browser_running;
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>
+            Desktop Browser Control & Tab Reuse
+          </div>
+          <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            Reuses existing desktop tabs (e.g. LinkedIn, GitHub) instead of opening duplicates.
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isExtensionConnected ? (
+            <span className="px-2 py-0.5 rounded text-[11px] font-medium" style={{ background: '#064e3b', color: '#34d399', border: '1px solid #059669' }}>
+              Companion Active
+            </span>
+          ) : isRunning ? (
+            <span className="px-2 py-0.5 rounded text-[11px] font-medium" style={{ background: '#1e3a5f', color: '#60a5fa', border: '1px solid #2563eb' }}>
+              Desktop Detected
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded text-[11px] font-medium" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-tertiary)' }}>
+              Disconnected
+            </span>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={loading}
+            className="p-1 rounded cursor-pointer"
+            style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}
+            title="Refresh status and open tabs"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Diagnostics info */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <div style={{ color: 'var(--color-text-tertiary)' }}>Connection Mode</div>
+          <div className="font-semibold capitalize" style={{ color: 'var(--color-text)' }}>
+            {status?.mode === 'extension' ? 'Companion Bridge' : status?.mode === 'cdp' ? 'CDP DevTools' : status?.mode === 'windows_gui' ? 'Windows GUI' : 'Unconnected'}
+          </div>
+        </div>
+        <div className="p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <div style={{ color: 'var(--color-text-tertiary)' }}>Running Process</div>
+          <div className="font-semibold" style={{ color: 'var(--color-text)' }}>
+            {status?.running_browsers?.join(', ') || 'None detected'}
+          </div>
+        </div>
+        <div className="p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <div style={{ color: 'var(--color-text-tertiary)' }}>Open Tabs</div>
+          <div className="font-semibold" style={{ color: 'var(--color-text)' }}>
+            {status?.tab_count ?? tabs.length}
+          </div>
+        </div>
+        <div className="p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <div style={{ color: 'var(--color-text-tertiary)' }}>Focused Tab</div>
+          <div className="font-semibold truncate" style={{ color: 'var(--color-text)' }} title={status?.active_tab?.title || ''}>
+            {status?.active_tab?.title || 'None'}
+          </div>
+        </div>
+      </div>
+
+      {/* URL test box */}
+      <div className="p-3 rounded space-y-2" style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)' }}>
+        <div className="text-xs font-medium" style={{ color: 'var(--color-text)' }}>
+          Test Tab Reuse or Launch
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={testUrl}
+            onChange={(e) => setTestUrl(e.target.value)}
+            placeholder="e.g. https://www.linkedin.com or linkedin"
+            className="flex-1 px-2.5 py-1.5 text-xs rounded outline-none"
+            style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}
+          />
+          <button
+            onClick={() => handleOpenOrReuse(false)}
+            disabled={loading || !testUrl.trim()}
+            className="px-3 py-1.5 text-xs rounded font-medium cursor-pointer"
+            style={{ background: 'var(--color-accent)', color: '#fff' }}
+          >
+            Open / Reuse
+          </button>
+          <button
+            onClick={() => handleOpenOrReuse(true)}
+            disabled={loading || !testUrl.trim()}
+            className="px-3 py-1.5 text-xs rounded font-medium cursor-pointer"
+            style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}
+          >
+            Force New Tab
+          </button>
+        </div>
+        {actionMessage && (
+          <div className="text-xs p-2 rounded" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}>
+            {actionMessage}
+          </div>
+        )}
+      </div>
+
+      {/* Tabs list */}
+      {tabs.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs font-medium px-1" style={{ color: 'var(--color-text-tertiary)' }}>
+            Detected Browser Tabs ({tabs.length})
+          </div>
+          <div className="max-h-48 overflow-y-auto space-y-1 rounded p-1" style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)' }}>
+            {tabs.map((tab) => (
+              <div
+                key={String(tab.tab_id)}
+                className="flex items-center justify-between p-1.5 rounded text-xs gap-2"
+                style={{ background: tab.is_active ? 'var(--color-bg-tertiary)' : 'transparent' }}
+              >
+                <div className="truncate flex-1">
+                  <span className="font-medium" style={{ color: 'var(--color-text)' }}>
+                    {tab.title || 'Untitled'}
+                  </span>
+                  <span className="ml-2 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                    ({tab.domain || tab.url || 'window'})
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => handleActivate(tab.tab_id, Number(tab.window_id) || 0, tab.title)}
+                    className="px-2 py-0.5 rounded text-[11px] font-medium cursor-pointer"
+                    style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}
+                  >
+                    Focus
+                  </button>
+                  <button
+                    onClick={() => handleClose(tab.tab_id)}
+                    className="px-2 py-0.5 rounded text-[11px] cursor-pointer hover:text-red-400"
+                    style={{ color: 'var(--color-text-tertiary)' }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Extension setup guide card */}
+      <div className="p-3 rounded text-xs space-y-2" style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)' }}>
+        <div className="font-medium" style={{ color: 'var(--color-text)' }}>
+          Chrome / Edge Companion Extension Setup
+        </div>
+        <div style={{ color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
+          To enable instant tab reuse across your personal Chrome or Edge windows:
+          <ol className="list-decimal ml-4 mt-1 space-y-0.5">
+            <li>Open <code className="px-1 py-0.2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>chrome://extensions</code> or <code className="px-1 py-0.2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>edge://extensions</code> and enable <b>Developer mode</b>.</li>
+            <li>Click <b>Load unpacked</b> and select the folder: <code className="px-1 py-0.2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>extensions/jarvis-browser-extension</code>.</li>
+            <li>The companion connects automatically using your local pairing secret.</li>
+          </ol>
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <span style={{ color: 'var(--color-text-tertiary)' }}>Local Pairing Token:</span>
+          <code className="px-1.5 py-0.5 rounded font-mono text-[11px]" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}>
+            {status?.pairing_token ? `${status.pairing_token.slice(0, 12)}...` : 'Loading...'}
+          </code>
+          <button
+            onClick={copyToken}
+            className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+            style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}
+          >
+            {copiedToken ? 'Copied!' : 'Copy Token'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Folders Jarvis may work in without asking again (risky commands still ask). */
 function FolderPermissions() {
   const [folders, setFolders] = useState<string[]>([]);
@@ -391,7 +670,14 @@ export function SettingsPage() {
   const serverInfo = useAppStore((s) => s.serverInfo);
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [speechBackendAvailable, setSpeechBackendAvailable] = useState<boolean | null>(null);
-  const [ttsBackend, setTtsBackend] = useState<{ available: boolean; backend?: string; voice_id?: string } | null>(null);
+  const [ttsBackend, setTtsBackend] = useState<{ available: boolean; backend?: string; voice_id?: string; speed?: number } | null>(null);
+  const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfileInfo[]>([]);
+  const [activeProfile, setActiveProfile] = useState<string>('classic_jarvis');
+  const [availableVoices, setAvailableVoices] = useState<VoiceOption[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState<string>('en-GB-RyanNeural');
+  const [voiceSpeed, setVoiceSpeed] = useState<number>(0.96);
+  const [isTestingVoice, setIsTestingVoice] = useState<boolean>(false);
+  const testAudioRef = useRef<HTMLAudioElement | null>(null);
   const [saved, setSaved] = useState(false);
 
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(() => !isAutoUpdateDisabled());
@@ -496,9 +782,99 @@ export function SettingsPage() {
       .then((h) => setSpeechBackendAvailable(h.available))
       .catch(() => setSpeechBackendAvailable(false));
     fetchTtsHealth()
-      .then((h) => setTtsBackend(h))
+      .then((h) => {
+        setTtsBackend(h);
+        if (h.voice_id) setSelectedVoice(h.voice_id);
+        if (typeof h.speed === 'number') setVoiceSpeed(h.speed);
+      })
       .catch(() => setTtsBackend({ available: false }));
+    fetchVoiceProfiles()
+      .then((res) => {
+        setVoiceProfiles(res.profiles || []);
+        if (res.active_profile) setActiveProfile(res.active_profile);
+        const curr = res.profiles?.find((p) => p.id === res.active_profile);
+        if (curr) {
+          setSelectedVoice(curr.voice_id);
+          setVoiceSpeed(curr.speed);
+        }
+      })
+      .catch(() => {});
+    fetchAvailableVoices()
+      .then((voices) => setAvailableVoices(voices || []))
+      .catch(() => {});
   }, []);
+
+  const handleProfileSelect = async (profileId: string) => {
+    setActiveProfile(profileId);
+    try {
+      await applyVoiceProfile(profileId);
+      const p = voiceProfiles.find((v) => v.id === profileId);
+      if (p) {
+        setSelectedVoice(p.voice_id);
+        setVoiceSpeed(p.speed);
+      }
+      fetchTtsHealth().then(setTtsBackend).catch(() => {});
+      showSaved();
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleVoiceChange = async (voiceId: string) => {
+    setSelectedVoice(voiceId);
+    try {
+      await updateSpeechSettings({ voice_id: voiceId });
+      fetchTtsHealth().then(setTtsBackend).catch(() => {});
+      showSaved();
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSpeedChange = async (speed: number) => {
+    setVoiceSpeed(speed);
+    try {
+      await updateSpeechSettings({ voice_speed: speed });
+      showSaved();
+    } catch {
+      // ignore
+    }
+  };
+
+  const handlePreviewVoice = async () => {
+    if (isTestingVoice) {
+      if (testAudioRef.current) {
+        testAudioRef.current.pause();
+        testAudioRef.current = null;
+      }
+      setIsTestingVoice(false);
+      return;
+    }
+    setIsTestingVoice(true);
+    try {
+      const phrase = "Good day, sir. Systems are online and fully operational. How may I assist you today?";
+      const blob = await synthesizeSpeech(phrase, {
+        voiceId: selectedVoice || undefined,
+        speed: voiceSpeed,
+      });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      testAudioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        testAudioRef.current = null;
+        setIsTestingVoice(false);
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        testAudioRef.current = null;
+        setIsTestingVoice(false);
+      };
+      await audio.play();
+    } catch {
+      setIsTestingVoice(false);
+    }
+  };
 
   const showSaved = () => {
     setSaved(true);
@@ -722,6 +1098,10 @@ export function SettingsPage() {
             <DesktopControlToggle />
           </Section>
 
+          <Section title="Desktop Browser Integration">
+            <DesktopBrowserIntegration />
+          </Section>
+
           {/* Models */}
           <Section title="Models">
             <SettingRow label="Local models (Ollama)" description="Models available for local inference">
@@ -891,7 +1271,7 @@ export function SettingsPage() {
           </Section>
 
           {/* Speech */}
-          <Section title="Speech">
+          <Section title="Speech & Jarvis Voice">
             <SettingRow label="Speech-to-Text" description="Enable microphone input for voice dictation">
               <button
                 onClick={() => { updateSettings({ speechEnabled: !settings.speechEnabled }); showSaved(); }}
@@ -909,7 +1289,7 @@ export function SettingsPage() {
                 />
               </button>
             </SettingRow>
-            <SettingRow label="Text-to-Speech" description="Show a read-aloud button on assistant replies">
+            <SettingRow label="Text-to-Speech" description="Enable neural voice output on assistant replies">
               <button
                 onClick={() => { updateSettings({ voiceOutputEnabled: !settings.voiceOutputEnabled }); showSaved(); }}
                 className="relative w-11 h-6 rounded-full transition-colors cursor-pointer"
@@ -946,7 +1326,102 @@ export function SettingsPage() {
                 />
               </button>
             </SettingRow>
-            <SettingRow label="Voice" description="Backend and voice used for spoken replies">
+
+            {/* Voice Profile Selector */}
+            <SettingRow label="Voice Persona" description="Select the calibrated vocal persona and prosody for Jarvis">
+              <div className="grid grid-cols-2 gap-2 w-full max-w-md mt-1">
+                {(voiceProfiles.length > 0 ? voiceProfiles : [
+                  { id: 'classic_jarvis', name: 'Classic JARVIS', description: 'Sophisticated British male (RyanNeural)' },
+                  { id: 'professional', name: 'Professional', description: 'Clear, articulate & objective (ThomasNeural)' },
+                  { id: 'friendly', name: 'Friendly', description: 'Warm, conversational & approachable (GuyNeural)' },
+                  { id: 'concise', name: 'Concise', description: 'High-tempo & direct responses' },
+                ]).map((profile) => (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    onClick={() => handleProfileSelect(profile.id)}
+                    className={`flex flex-col text-left p-2.5 rounded-lg border transition-all cursor-pointer ${
+                      activeProfile === profile.id
+                        ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 font-medium'
+                        : 'border-[var(--color-border)] bg-[var(--color-bg-secondary)] opacity-80 hover:opacity-100'
+                    }`}
+                  >
+                    <span className="text-xs font-semibold" style={{ color: activeProfile === profile.id ? 'var(--color-accent)' : 'var(--color-text)' }}>
+                      {profile.name}
+                    </span>
+                    <span className="text-[11px] line-clamp-1 mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
+                      {profile.description}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </SettingRow>
+
+            {/* Voice Dropdown */}
+            <SettingRow label="Voice Model" description="Neural voice identity for the active backend">
+              <div className="flex items-center gap-2">
+                {availableVoices.length > 0 ? (
+                  <select
+                    value={selectedVoice}
+                    onChange={(e) => handleVoiceChange(e.target.value)}
+                    className="text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer outline-none"
+                    style={{
+                      background: 'var(--color-bg-secondary)',
+                      borderColor: 'var(--color-border)',
+                      color: 'var(--color-text)',
+                    }}
+                  >
+                    {availableVoices.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name} ({v.locale} - {v.backend})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-xs font-mono px-2 py-1 rounded bg-[var(--color-bg-tertiary)]" style={{ color: 'var(--color-text-secondary)' }}>
+                    {selectedVoice || ttsBackend?.voice_id || 'en-GB-RyanNeural'}
+                  </span>
+                )}
+              </div>
+            </SettingRow>
+
+            {/* Speaking Rate / Speed Slider */}
+            <SettingRow label="Speaking Rate" description={`${voiceSpeed.toFixed(2)}x normal speed`}>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="0.75"
+                  max="1.40"
+                  step="0.02"
+                  value={voiceSpeed}
+                  onChange={(e) => handleSpeedChange(parseFloat(e.target.value))}
+                  className="w-32 cursor-pointer accent-[var(--color-accent)]"
+                />
+                <span className="text-xs font-mono w-10 text-right" style={{ color: 'var(--color-text-secondary)' }}>
+                  {voiceSpeed.toFixed(2)}x
+                </span>
+              </div>
+            </SettingRow>
+
+            {/* Test Voice Button */}
+            <SettingRow label="Preview Voice" description="Listen to the current vocal configuration">
+              <button
+                type="button"
+                onClick={handlePreviewVoice}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                style={{
+                  background: isTestingVoice ? 'var(--color-accent)' : 'var(--color-bg-secondary)',
+                  color: isTestingVoice ? '#ffffff' : 'var(--color-text)',
+                  border: '1px solid var(--color-border)',
+                }}
+              >
+                {isTestingVoice ? <StopIcon size={14} /> : <Play size={14} />}
+                {isTestingVoice ? 'Stop' : 'Play Sample'}
+              </button>
+            </SettingRow>
+
+            {/* Backend status badges */}
+            <SettingRow label="TTS Engine Status" description="Active text-to-speech synthesis pipeline">
               <div className="flex items-center gap-2">
                 <span
                   className="w-2 h-2 rounded-full"
@@ -954,14 +1429,15 @@ export function SettingsPage() {
                     background: ttsBackend?.available ? 'var(--color-success)' : 'var(--color-text-tertiary)',
                   }}
                 />
-                <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
                   {ttsBackend === null ? 'Checking...'
-                    : ttsBackend.available ? `${ttsBackend.backend}${ttsBackend.voice_id ? ` / ${ttsBackend.voice_id}` : ''}`
-                    : 'Not configured'}
+                    : ttsBackend.available
+                      ? `${ttsBackend.backend?.toUpperCase()} (${ttsBackend.voice_id || selectedVoice})`
+                      : 'Unavailable'}
                 </span>
               </div>
             </SettingRow>
-            <SettingRow label="Backend status" description="Requires Whisper, Deepgram, or another speech backend">
+            <SettingRow label="STT Engine Status" description="Speech recognition microphone pipeline">
               <div className="flex items-center gap-2">
                 <span
                   className="w-2 h-2 rounded-full"
@@ -971,7 +1447,7 @@ export function SettingsPage() {
                       : 'var(--color-text-tertiary)',
                   }}
                 />
-                <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
                   {speechBackendAvailable === null ? 'Checking...'
                     : speechBackendAvailable ? 'Available'
                     : 'Not configured'}

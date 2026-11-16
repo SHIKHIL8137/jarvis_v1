@@ -204,7 +204,17 @@ class IsolatedVerificationRunner:
                 text=True,
                 timeout=3.0,
             )
-            self._container_available = (res.returncode == 0)
+            if res.returncode != 0:
+                self._container_available = False
+            else:
+                # Daemon is running; verify required image is present locally
+                img_res = subprocess.run(
+                    [runtime_bin, "image", "inspect", self.image],
+                    capture_output=True,
+                    text=True,
+                    timeout=3.0,
+                )
+                self._container_available = (img_res.returncode == 0)
         except Exception:
             self._container_available = False
 
@@ -984,6 +994,15 @@ class IsolatedVerificationRunner:
             text=True,
             timeout=timeout_sec,
         )
+
+        if proc.returncode != 0 and (
+            proc.returncode == 125
+            or "Unable to find image" in proc.stderr
+            or "Error response from daemon" in proc.stderr
+            or "docker: Error" in proc.stderr
+            or "podman: Error" in proc.stderr
+        ):
+            raise RuntimeError(f"Container runtime failed to start container: {(proc.stderr or proc.stdout).strip()}")
 
         passed = (proc.returncode == 0)
         return {

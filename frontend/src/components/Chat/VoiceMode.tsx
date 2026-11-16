@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Square, X } from 'lucide-react';
 import { useAppStore } from '../../lib/store';
-import { transcribeAudio, fetchSpeechHealth } from '../../lib/api';
+import { transcribeAudio, fetchSpeechHealth, synthesizeSpeech, interruptSpeech } from '../../lib/api';
 import { stripThinkTags, toSpeakableText, stripEmojis } from '../../lib/message-text';
 
 type VState = 'starting' | 'listening' | 'hearing' | 'transcribing' | 'thinking' | 'speaking' | 'error';
@@ -116,7 +116,15 @@ export function VoiceMode({ onClose }: { onClose: () => void }) {
     spokenIdxRef.current = replyRef.current.length;
     baseIdRef.current = lastIdRef.current;
     awaitingReplyRef.current = false;
+    interruptSpeech().catch(() => {});
     window.dispatchEvent(new CustomEvent('jarvis:voice-interrupt'));
+  }, []);
+
+  // Cleanup synthesis on unmount
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis?.cancel();
+    };
   }, []);
 
   // Speak the reply sentence by sentence while it streams in.

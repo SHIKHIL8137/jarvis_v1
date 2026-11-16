@@ -447,6 +447,81 @@ export async function fetchTtsHealth(): Promise<TtsHealth> {
   return res.json();
 }
 
+export interface VoiceProfileInfo {
+  id: string;
+  name: string;
+  description: string;
+  backend: string;
+  voice_id: string;
+  speed: number;
+  pitch: string;
+  active: boolean;
+}
+
+export interface VoiceProfilesResponse {
+  profiles: VoiceProfileInfo[];
+  active_profile: string;
+}
+
+export interface VoiceOption {
+  id: string;
+  name: string;
+  backend: string;
+  gender: string;
+  locale: string;
+  description: string;
+}
+
+export interface SpeechSettingsUpdate {
+  tts_backend?: string;
+  voice_id?: string;
+  voice_speed?: number;
+  voice_pitch?: string;
+  voice_profile?: string;
+}
+
+export async function fetchVoiceProfiles(): Promise<VoiceProfilesResponse> {
+  const res = await apiFetch(`/v1/speech/profiles`);
+  if (!res.ok) throw new Error(`Failed to fetch voice profiles: ${res.status}`);
+  return res.json();
+}
+
+export async function applyVoiceProfile(profileId: string): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/v1/speech/profiles/${encodeURIComponent(profileId)}/apply`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to apply voice profile: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAvailableVoices(): Promise<VoiceOption[]> {
+  const res = await apiFetch(`/v1/speech/voices`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.voices || [];
+}
+
+export async function updateSpeechSettings(settings: SpeechSettingsUpdate): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/v1/speech/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error(`Failed to update speech settings: ${res.status}`);
+  return res.json();
+}
+
+export async function interruptSpeech(): Promise<boolean> {
+  try {
+    const res = await apiFetch(`/v1/speech/interrupt`, { method: 'POST' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.interrupted);
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchSpeechHealth(): Promise<SpeechHealth> {
   if (isTauri()) {
     try {
@@ -1792,4 +1867,108 @@ export async function triggerN8nWebhook(path: string, data?: any): Promise<any> 
   });
   return await res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Desktop Browser Integration
+// ---------------------------------------------------------------------------
+
+export interface BrowserTab {
+  tab_id: string | number;
+  window_id: string | number;
+  url: string;
+  title: string;
+  domain: string;
+  is_active: boolean;
+  fav_icon_url?: string;
+}
+
+export interface BrowserStatus {
+  state: 'disconnected' | 'connected' | 'ready';
+  mode: 'extension' | 'cdp' | 'windows_gui' | 'unconnected';
+  browser_running: boolean;
+  running_browsers: string[];
+  tab_count: number;
+  active_tab: BrowserTab | null;
+  extension_connected: boolean;
+  pairing_token: string;
+  installed_browsers: Record<string, string>;
+}
+
+export interface BrowserActionResult {
+  success: boolean;
+  action: string;
+  message: string;
+  reused_existing: boolean;
+  tab?: BrowserTab;
+  metadata?: Record<string, any>;
+}
+
+export async function fetchBrowserStatus(): Promise<BrowserStatus> {
+  const res = await apiFetch('/v1/browser/status');
+  if (!res.ok) throw new Error(`Failed to load browser status (${res.status})`);
+  return await res.json();
+}
+
+export async function fetchBrowserTabs(): Promise<BrowserTab[]> {
+  const res = await apiFetch('/v1/browser/tabs');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.tabs ?? [];
+}
+
+export async function openOrReuseBrowserTab(
+  destination: string,
+  explicitNewTab = false,
+  taskContext = '',
+): Promise<BrowserActionResult> {
+  const res = await apiFetch('/v1/browser/tabs/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      destination,
+      explicit_new_tab: explicitNewTab,
+      task_context: taskContext,
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to open/reuse tab (${res.status})`);
+  return await res.json();
+}
+
+export async function activateBrowserTab(
+  tabId: string | number,
+  windowId = 0,
+  titleHint = '',
+): Promise<{ status: string; activated: boolean; tab_id: string | number }> {
+  const res = await apiFetch(`/v1/browser/tabs/${tabId}/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ window_id: windowId, title_hint: titleHint }),
+  });
+  if (!res.ok) throw new Error(`Failed to activate tab (${res.status})`);
+  return await res.json();
+}
+
+export async function closeBrowserTab(
+  tabId: string | number,
+): Promise<{ status: string; closed: boolean; tab_id: string | number }> {
+  const res = await apiFetch(`/v1/browser/tabs/${tabId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`Failed to close tab (${res.status})`);
+  return await res.json();
+}
+
+export async function refreshBrowserConnection(): Promise<BrowserStatus> {
+  const res = await apiFetch('/v1/browser/connect', { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to refresh browser connection (${res.status})`);
+  return await res.json();
+}
+
+export async function fetchBrowserExtensionToken(): Promise<string> {
+  const res = await apiFetch('/v1/browser/extension/token');
+  if (!res.ok) throw new Error(`Failed to fetch extension pairing token (${res.status})`);
+  const data = await res.json();
+  return data.token ?? '';
+}
+
 

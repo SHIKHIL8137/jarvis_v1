@@ -384,3 +384,56 @@ def test_voice_id_not_reused_across_backends(mock_tts_backend):
 
     # Backend is mock_tts, not the configured kokoro, so bm_george must not leak.
     assert mock_tts_backend.synthesize.call_args.kwargs["voice_id"] != "bm_george"
+
+
+def test_list_voice_profiles(mock_tts_backend):
+    client = _tts_app(mock_tts_backend)
+    res = client.get("/v1/speech/profiles")
+    assert res.status_code == 200
+    data = res.json()
+    assert "profiles" in data
+    assert "active_profile" in data
+    profile_ids = [p["id"] for p in data["profiles"]]
+    assert "classic_jarvis" in profile_ids
+    assert "professional" in profile_ids
+
+
+def test_apply_voice_profile(mock_tts_backend):
+    client = _tts_app(mock_tts_backend)
+    res = client.post("/v1/speech/profiles/professional/apply")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["applied"] == "professional"
+    assert "profile" in data
+
+
+def test_list_available_voices(mock_tts_backend):
+    client = _tts_app(mock_tts_backend)
+    res = client.get("/v1/speech/voices")
+    assert res.status_code == 200
+    data = res.json()
+    assert "voices" in data
+    assert isinstance(data["voices"], list)
+    assert len(data["voices"]) > 0
+
+
+def test_update_speech_settings(mock_tts_backend):
+    client = _tts_app(mock_tts_backend)
+    res = client.post("/v1/speech/settings", json={"voice_speed": 1.10, "voice_pitch": "+2Hz"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["updated"]["voice_speed"] == 1.10
+    assert data["updated"]["voice_pitch"] == "+2Hz"
+
+
+def test_synthesize_stream_endpoint(mock_tts_backend):
+    client = _tts_app(mock_tts_backend)
+    res = client.post("/v1/speech/synthesize/stream", json={"text": "First sentence. Second sentence."})
+    assert res.status_code == 200
+    assert "application/x-ndjson" in res.headers["content-type"]
+    lines = [line for line in res.text.strip().split("\n") if line.strip()]
+    assert len(lines) >= 1
+    import json
+    first_chunk = json.loads(lines[0])
+    assert "sentence" in first_chunk
+    assert "audio_base64" in first_chunk

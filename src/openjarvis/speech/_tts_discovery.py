@@ -15,17 +15,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Priority order: local first, then cloud.
-TTS_BACKEND_ORDER = ("kokoro", "openai_tts", "cartesia", "elevenlabs")
+# Priority order: local & zero-key neural first, then cloud, then OS native fallback.
+TTS_BACKEND_ORDER = (
+    "edge_tts",
+    "kokoro",
+    "openai_tts",
+    "cartesia",
+    "elevenlabs",
+    "windows_tts",
+)
 
 # Voice IDs are backend-specific and NOT portable. ``speech.voice_id`` applies
 # only to ``speech.tts_backend``; if synthesis falls back to another backend we
 # use that backend's own default rather than passing an unrecognized ID through.
 BACKEND_DEFAULT_VOICE = {
+    "edge_tts": "en-GB-RyanNeural",  # Calm, intelligent, sophisticated British male (classic JARVIS)
     "kokoro": "bm_george",  # British male
     "openai_tts": "onyx",  # deepest OpenAI preset
     "cartesia": "",  # no safe static default; let Cartesia choose
     "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",  # "George", British male
+    "windows_tts": "Microsoft David Desktop",  # Windows SAPI5 offline fallback
 }
 
 
@@ -70,11 +79,18 @@ def get_tts_backend(
 def voice_preferences(config: "JarvisConfig") -> tuple[str, str, float]:
     """Resolve ``(tts_backend, voice_id, speed)`` from *config*."""
     speech = getattr(config, "speech", None)
-    return (
-        getattr(speech, "tts_backend", "kokoro") or "kokoro",
-        getattr(speech, "voice_id", "") or "",
-        float(getattr(speech, "voice_speed", 1.0)),
-    )
+    profile_id = getattr(speech, "voice_profile", "classic_jarvis") or "classic_jarvis"
+    from openjarvis.speech.profiles import get_voice_profile_manager
+
+    profile = get_voice_profile_manager().get_profile(profile_id)
+    default_backend = profile.backend if profile else "edge_tts"
+    default_voice = profile.voice_id if profile else "en-GB-RyanNeural"
+    default_speed = profile.speed if profile else 0.96
+
+    backend = getattr(speech, "tts_backend", "") or default_backend
+    voice_id = getattr(speech, "voice_id", "") or default_voice
+    speed = float(getattr(speech, "voice_speed", 0.0) or default_speed)
+    return backend, voice_id, speed
 
 
 __all__ = [

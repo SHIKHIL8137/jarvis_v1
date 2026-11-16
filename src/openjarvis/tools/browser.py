@@ -115,6 +115,13 @@ class BrowserNavigateTool(BaseTool):
                             " or 'networkidle'. Default: 'load'."
                         ),
                     },
+                    "use_desktop": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether to navigate the user's running desktop browser with"
+                            " intelligent tab reuse instead of headless browser."
+                        ),
+                    },
                 },
                 "required": ["url"],
             },
@@ -147,6 +154,18 @@ class BrowserNavigateTool(BaseTool):
                 tool_name="browser_navigate",
                 content=f"SSRF blocked: {ssrf_error}",
                 success=False,
+            )
+
+        if params.get("use_desktop", False):
+            from openjarvis.browser.manager import get_browser_manager
+
+            mgr = get_browser_manager()
+            res = mgr.open_or_reuse(url)
+            return ToolResult(
+                tool_name="browser_navigate",
+                content=res.message,
+                success=res.success,
+                metadata=res.metadata,
             )
 
         try:
